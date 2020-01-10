@@ -13,6 +13,11 @@ import (
 	"github.com/inconshreveable/log15"
 )
 
+var (
+	ErrWorkerPoolBusy   = errors.New("worker pool busy")
+	ErrWorkerPoolClosed = errors.New("worker pool closed")
+)
+
 type PoolConfig struct {
 	Logger               log15.Logger
 	NumWorkers           int
@@ -217,7 +222,7 @@ func (p *WorkerPool) spawnWorker() {
 	}(p.workerCtx)
 }
 
-func (p *WorkerPool) Dispatch(req JanetRequest) (JanetResponse, error) {
+func (p *WorkerPool) Dispatch(req JanetRequest, timeout time.Duration) (JanetResponse, error) {
 
 	respChan := make(chan workResponse)
 
@@ -226,15 +231,20 @@ func (p *WorkerPool) Dispatch(req JanetRequest) (JanetResponse, error) {
 		RespChan: respChan,
 	}
 
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+
 	select {
+	case <-t.C:
+		return JanetResponse{}, ErrWorkerPoolBusy
 	case <-p.workerCtx.Done():
-		return JanetResponse{}, fmt.Errorf("worker pool closed")
+		return JanetResponse{}, ErrWorkerPoolClosed
 	case p.dispatch <- workReq:
 	}
 
 	select {
 	case <-p.workerCtx.Done():
-		return JanetResponse{}, fmt.Errorf("worker pool closed")
+		return JanetResponse{}, ErrWorkerPoolClosed
 	case r := <-workReq.RespChan:
 		if r.Err != nil {
 			return JanetResponse{}, fmt.Errorf("request failed: %w", r.Err)

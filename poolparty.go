@@ -108,11 +108,9 @@ func (p *WorkerPool) spawnWorker() {
 				defer p4.Close()
 
 				if len(p.cfg.WorkerProc) > 1 {
-					// TODO we should use SIGTERM instead of SIGKILL so CommandContext
-					// shouldn't be used...
-					cmd = exec.CommandContext(ctx, p.cfg.WorkerProc[0], p.cfg.WorkerProc[1:]...)
+					cmd = exec.Command(p.cfg.WorkerProc[0], p.cfg.WorkerProc[1:]...)
 				} else {
-					cmd = exec.CommandContext(ctx, p.cfg.WorkerProc[0])
+					cmd = exec.Command(p.cfg.WorkerProc[0])
 				}
 
 				logger.Info("launching worker command", "cmd", cmd)
@@ -203,7 +201,11 @@ func (p *WorkerPool) spawnWorker() {
 			}
 
 			if err != nil {
-				logger.Error("pool worker died", "err", err)
+				if p.workerCtx.Err() == nil {
+					logger.Error("pool worker died", "err", err)
+				} else {
+					logger.Info("worker shutdown by request")
+				}
 			}
 			select {
 			case <-p.workerCtx.Done():

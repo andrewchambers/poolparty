@@ -36,7 +36,7 @@ func main() {
 	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "number of requests to accept in the backlog")
 	staticDir := flag.String("static-dir", "", "dir to serve at /static/")
 	listenOn := flag.String("listen-on", "127.0.0.1:8080", "address to listen on.")
-	enableMetrics := flag.Bool("enable-metrics", false, "server prometheus metrics at /metrics.")
+	enableMetrics := flag.Bool("enable-metrics", false, "serve prometheus metrics at /metrics.")
 
 	flag.Parse()
 

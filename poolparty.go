@@ -1,6 +1,7 @@
 package poolparty
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -93,6 +94,7 @@ func (p *WorkerPool) spawnWorker() {
 		for {
 			logger := p.cfg.Logger
 			var cmd *exec.Cmd
+			cmdWorkerWg := &sync.WaitGroup{}
 
 			func() {
 
@@ -112,6 +114,14 @@ func (p *WorkerPool) spawnWorker() {
 				defer p3.Close()
 				defer p4.Close()
 
+				p5, p6, err := os.Pipe()
+				if err != nil {
+					logger.Error(perrmsg, "err", err)
+					return
+				}
+				defer p5.Close()
+				defer p6.Close()
+
 				if len(p.cfg.WorkerProc) > 1 {
 					cmd = exec.Command(p.cfg.WorkerProc[0], p.cfg.WorkerProc[1:]...)
 				} else {
@@ -122,12 +132,22 @@ func (p *WorkerPool) spawnWorker() {
 
 				cmd.Stdin = p1
 				cmd.Stdout = p4
-				cmd.Stderr = os.Stderr
-				// XXX cmd.Stderr should be logged...
-				// XXX It might be wise to pass the output
-				// via fd 3 and fd 4, this means accidental
-				// prints to stdout/stderr won't mess with
-				// our protocol.
+				cmd.Stderr = p6
+
+				cmdWorkerWg.Add(1)
+				go func() {
+					defer cmdWorkerWg.Done()
+					brdr := bufio.NewReader(p5)
+					for {
+						ln, err := brdr.ReadString('\n')
+						if ln != "" {
+							logger.Info("worker stderr", "ln", ln)
+						}
+						if err != nil {
+							return
+						}
+					}
+				}()
 
 				err = cmd.Start()
 				if err != nil {
@@ -135,10 +155,14 @@ func (p *WorkerPool) spawnWorker() {
 					return
 				}
 
+				logger = logger.New("pid", fmt.Sprintf("%d", cmd.Process.Pid))
+				logger.Info("worker spawned")
+
 				// After the command has started, we need to close our side
 				// of the pipes we gave it.
 				_ = p1.Close()
 				_ = p4.Close()
+				_ = p6.Close()
 
 				encoder := json.NewEncoder(p2)
 				decoder := json.NewDecoder(p3)
@@ -204,6 +228,7 @@ func (p *WorkerPool) spawnWorker() {
 			if cmd != nil {
 				err = cmd.Wait()
 			}
+			cmdWorkerWg.Wait()
 
 			if err != nil {
 				if p.workerCtx.Err() == nil {

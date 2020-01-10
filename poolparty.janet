@@ -2,6 +2,7 @@
 
 (defn serve
   [handler &opt inf outf]
+  (setdyn :out stderr)
   (default inf stdin)
   (default outf stdout)
   (def p (parser/new))

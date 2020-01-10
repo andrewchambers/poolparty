@@ -14,6 +14,7 @@
     (def req (json/decode inbuf))
     (unless req (error "malformed request"))
     (def resp (handler req))
+    # XXX It would be nice if the encode api would let us reuse the buffer
     (def respb (json/encode resp))
     (buffer/push-byte respb (comptime ("\n" 0)))
     (file/write outf respb)

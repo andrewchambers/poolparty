@@ -19,5 +19,5 @@ webapp.janet
 Then launch pool party from the command line:
 
 ```
-$ poolparty $ARGS -- janet webapp.janet
+$ poolparty --pool-size 6 --static-files ./static -- janet webapp.janet
 ```

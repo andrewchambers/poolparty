@@ -14,24 +14,25 @@ import (
 )
 
 type PoolConfig struct {
-	Logger     log15.Logger
-	DevMode    bool
-	NumWorkers int
-	WorkerProc []string
+	Logger               log15.Logger
+	NumWorkers           int
+	WorkerProc           []string
+	WorkerRequestTimeout time.Duration
 }
 
 // XXX would be much better if these were
 // not strings, we probably need msgpack or
 // raw json encoders/decoders for that.
 type JanetRequest struct {
-	Headers string
-	Body    string
+	RequestID string `json:"request-id"`
+	Headers   string `json:"headers"`
+	Body      string `json:"body"`
 }
 
 type JanetResponse struct {
-	Status  int
-	Headers []string
-	Body    string
+	Status  int      `json:"status"`
+	Headers []string `json:"headers"`
+	Body    string   `json:"body"`
 }
 
 type workRequest struct {
@@ -61,9 +62,6 @@ func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 	}
 	if len(cfg.WorkerProc) <= 0 {
 		return nil, errors.New("pool worker proc must not be empty")
-	}
-	if cfg.DevMode {
-		cfg.NumWorkers = 1
 	}
 
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
@@ -116,7 +114,7 @@ func (p *WorkerPool) spawnWorker() {
 				} else {
 					cmd = exec.CommandContext(ctx, p.cfg.WorkerProc[0])
 				}
-				
+
 				logger.Info("launching worker command", "cmd", cmd)
 
 				cmd.Stdin = p1
@@ -151,6 +149,14 @@ func (p *WorkerPool) spawnWorker() {
 					case workReq = <-p.dispatch:
 					}
 
+					logger := logger.New("id", workReq.Req.RequestID)
+
+					workerRequestTimeoutTimer := time.AfterFunc(p.cfg.WorkerRequestTimeout, func() {
+						logger.Info("worker request timeout triggered")
+						_ = p2.Close()
+						_ = p3.Close()
+					})
+
 					err = encoder.Encode(workReq.Req)
 					if err != nil {
 						logger.Error("unable to forward request to worker", "err", err)
@@ -181,6 +187,10 @@ func (p *WorkerPool) spawnWorker() {
 					case workReq.RespChan <- workResponse{Resp: resp}:
 					}
 
+					// Timer has triggered, we need to restart the worker.
+					if !workerRequestTimeoutTimer.Stop() {
+						return
+					}
 				}
 
 			}()
@@ -192,7 +202,6 @@ func (p *WorkerPool) spawnWorker() {
 				err = cmd.Wait()
 			}
 
-			// In dev mode we exit on purpose to reload the code.
 			if err != nil {
 				logger.Error("pool worker died", "err", err)
 			}

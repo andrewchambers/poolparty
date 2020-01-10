@@ -1,7 +1,9 @@
 (import json)
 
 (defn serve
-  [inf outf handler]
+  [handler &opt inf outf]
+  (default inf stdin)
+  (default outf stdout)
   (def p (parser/new))
   (def inbuf (buffer/new 0))
   (while true
@@ -17,6 +19,6 @@
     (file/flush outf)))
 
 (defn main [&]
-  (serve stdin stdout
+  (serve
     (fn [r]
-      @{:status 200 :body "ok!"})))
+      @{:status 200 :body "The pool is ready!"})))

@@ -82,25 +82,32 @@ func main() {
 		method := string(ctx.Method())
 		path := string(uri.Path())
 		log.Info("http request", "path", path, "method", method)
+		defer log.Info("request finished", "duration", time.Now().Sub(startt))
 
 		if staticFileHandler != nil && strings.HasPrefix(path, "/static/") {
 			staticFileHandler(ctx)
-			log.Info("static request finished", "duration", time.Now().Sub(startt))
 			return
 		}
 
 		if prometheusHandler != nil && path == "/metrics" {
 			prometheusHandler(ctx)
-			log.Info("metrics request finished", "duration", time.Now().Sub(startt))
 			return
 		}
 
+		reqHeaders := make(map[string]string)
+		ctx.Request.Header.VisitAll(func(key, value []byte) {
+			reqHeaders[string(key)] = string(value)
+		})
+
 		resp, err := pool.Dispatch(poolparty.JanetRequest{
 			RequestID: id,
-			Headers:   string(ctx.Request.Header.RawHeaders()),
-			Body:      string(ctx.Request.Body()),
+			// XXX Uri: string(uri.FullURI()),
+			Uri:     string(uri.Path()),
+			Headers: reqHeaders,
+			Method:  string(ctx.Request.Header.Method()),
+			Body:    string(ctx.Request.Body()),
 		}, *workerRendezvousTimeout)
-		log.Info("janet request finished", "duration", time.Now().Sub(startt))
+
 		if err != nil {
 			log.Error("error while dispatching to janet worker", "err", err)
 			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
@@ -119,8 +126,8 @@ func main() {
 			ctx.SetStatusCode(fasthttp.StatusOK)
 		}
 
-		headers := resp.ParsedResponse.GetObject("headers")
-		headers.Visit(func(kBytes []byte, v *fastjson.Value) {
+		respHeaders := resp.ParsedResponse.GetObject("headers")
+		respHeaders.Visit(func(kBytes []byte, v *fastjson.Value) {
 			vBytes := v.GetStringBytes()
 			ctx.Response.Header.SetBytesKV(kBytes, vBytes)
 		})

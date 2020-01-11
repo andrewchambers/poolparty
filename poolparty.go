@@ -28,12 +28,14 @@ type PoolConfig struct {
 }
 
 // XXX would be much better if these were
-// not strings, we probably need msgpack or
-// raw json encoders/decoders for that.
+// not strings, we probably want msgpack or
+// flatbuffers or something like that.
 type JanetRequest struct {
-	RequestID string `json:"request-id"`
-	Headers   string `json:"headers"`
-	Body      string `json:"body"`
+	RequestID string            `json:"request-id"`
+	Uri       string            `json:"uri"`
+	Method    string            `json:"method"`
+	Headers   map[string]string `json:"headers"`
+	Body      string            `json:"body"`
 }
 
 type JanetResponse struct {
@@ -183,6 +185,7 @@ func (p *WorkerPool) spawnWorker() {
 						_ = p2.Close()
 						_ = p3.Close()
 					})
+					defer workerRequestTimeoutTimer.Stop()
 
 					err = encoder.Encode(workReq.Req)
 					if err != nil {

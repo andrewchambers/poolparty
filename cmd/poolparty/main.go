@@ -14,6 +14,7 @@ import (
 	flag "github.com/spf13/pflag"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
+	"github.com/valyala/fastjson"
 )
 
 type fasthttpLogAdaptor struct {
@@ -101,16 +102,34 @@ func main() {
 		}, *workerRendezvousTimeout)
 		log.Info("janet request finished", "duration", time.Now().Sub(startt))
 		if err != nil {
-			log.Error("error dispatching request to pool", "err", err)
+			log.Error("error while dispatching to janet worker", "err", err)
 			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			fmt.Fprintf(ctx, "internal server error\n")
+			ctx.SetBody([]byte("internal server error\n"))
 			return
 		}
-		ctx.SetStatusCode(resp.Status)
-		ctx.SetBody([]byte(resp.Body))
+
+		if resp.ParsedResponse.Exists("file") {
+			fasthttp.ServeFile(ctx, string(resp.ParsedResponse.GetStringBytes("file")))
+			return
+		}
+
+		if resp.ParsedResponse.Exists("status") {
+			ctx.SetStatusCode(resp.ParsedResponse.GetInt("status"))
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusOK)
+		}
+
+		headers := resp.ParsedResponse.GetObject("headers")
+		headers.Visit(func(kBytes []byte, v *fastjson.Value) {
+			vBytes := v.GetStringBytes()
+			ctx.Response.Header.SetBytesKV(kBytes, vBytes)
+		})
+
+		ctx.SetBody(resp.ParsedResponse.GetStringBytes("body"))
 	}
 
 	server := &fasthttp.Server{
+		Name:               "poolparty",
 		ReadTimeout:        *readTimeout,
 		WriteTimeout:       *writeTimeout,
 		Concurrency:        *requestBacklog,

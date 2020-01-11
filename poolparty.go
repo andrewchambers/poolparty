@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/inconshreveable/log15"
+	"github.com/valyala/fastjson"
 )
 
 var (
@@ -36,9 +37,8 @@ type JanetRequest struct {
 }
 
 type JanetResponse struct {
-	Status  int      `json:"status"`
-	Headers []string `json:"headers"`
-	Body    string   `json:"body"`
+	RawResponse    []byte
+	ParsedResponse *fastjson.Value
 }
 
 type workRequest struct {
@@ -165,7 +165,7 @@ func (p *WorkerPool) spawnWorker() {
 				_ = p6.Close()
 
 				encoder := json.NewEncoder(p2)
-				decoder := json.NewDecoder(p3)
+				brdr := bufio.NewReader(p3)
 
 				for {
 					var workReq workRequest
@@ -196,14 +196,22 @@ func (p *WorkerPool) spawnWorker() {
 						}
 					}
 
-					var resp JanetResponse
-					err = decoder.Decode(&resp)
+					rawResp, err := brdr.ReadBytes('\n')
 					if err != nil {
 						select {
 						case <-p.workerCtx.Done():
 							return
 						case workReq.RespChan <- workResponse{Err: fmt.Errorf("decoding worker process response: %w", err)}:
-							logger.Error("decoding response failed", "err", err)
+							return
+						}
+					}
+
+					parsedResp, err := fastjson.ParseBytes(rawResp)
+					if err != nil {
+						select {
+						case <-p.workerCtx.Done():
+							return
+						case workReq.RespChan <- workResponse{Err: fmt.Errorf("decoding worker process response: %w", err)}:
 							return
 						}
 					}
@@ -211,7 +219,10 @@ func (p *WorkerPool) spawnWorker() {
 					select {
 					case <-p.workerCtx.Done():
 						return
-					case workReq.RespChan <- workResponse{Resp: resp}:
+					case workReq.RespChan <- workResponse{Resp: JanetResponse{
+						RawResponse:    rawResp,
+						ParsedResponse: parsedResp,
+					}}:
 					}
 
 					// Timer has triggered, we need to restart the worker.

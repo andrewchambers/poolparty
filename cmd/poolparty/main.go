@@ -23,12 +23,12 @@ func (l *fasthttpLogAdaptor) Printf(format string, args ...interface{}) {
 func main() {
 	log.Root().SetHandler(log.StderrHandler)
 
-	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "time to wait for a janet worker to begin a request")
+	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "time to wait for a janet worker to accept a request")
 	workerRequestTimeout := flag.Duration("worker-request-timeout", 60*time.Second, "timeout before a worker is considered crashed")
 	readTimeout := flag.Duration("request-read-timeout", 60*time.Second, "read timeout before an http request is aborted")
 	writeTimeout := flag.Duration("request-write-timeout", 60*time.Second, "write timeout before an http request is aborted")
 	poolSize := flag.Int("pool-size", 1, "number of worker janet processes")
-	requestBacklog := flag.Int("request-backlog", 1024, "number of requests to accept in the backlog")
+	requestBacklog := flag.Int("request-backlog", 1024, "number of requests to accept in the backlog ")
 	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "number of requests to accept in the backlog")
 	listenOn := flag.String("listen-on", "127.0.0.1:8080", "address to listen on.")
 

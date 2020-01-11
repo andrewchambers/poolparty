@@ -4,16 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/andrewchambers/poolparty"
 	log "github.com/inconshreveable/log15"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	flag "github.com/spf13/pflag"
 	"github.com/valyala/fasthttp"
-	"github.com/valyala/fasthttp/fasthttpadaptor"
 	"github.com/valyala/fastjson"
 )
 
@@ -25,56 +21,8 @@ func (l *fasthttpLogAdaptor) Printf(format string, args ...interface{}) {
 	l.l.Info(fmt.Sprintf(format, args...))
 }
 
-func main() {
-	log.Root().SetHandler(log.StderrHandler)
-
-	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "time to wait for a janet worker to begin a request")
-	workerRequestTimeout := flag.Duration("worker-request-timeout", 60*time.Second, "timeout before a worker is considered crashed")
-	readTimeout := flag.Duration("request-read-timeout", 60*time.Second, "read timeout before an http request is aborted")
-	writeTimeout := flag.Duration("request-write-timeout", 60*time.Second, "write timeout before an http request is aborted")
-	poolSize := flag.Int("pool-size", 1, "number of worker janet processes")
-	requestBacklog := flag.Int("request-backlog", 1024, "number of requests to accept in the backlog")
-	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "number of requests to accept in the backlog")
-	staticDir := flag.String("static-dir", "", "dir to serve at /static/")
-	listenOn := flag.String("listen-on", "127.0.0.1:8080", "address to listen on.")
-	enableMetrics := flag.Bool("enable-metrics", false, "serve prometheus metrics at /metrics.")
-
-	flag.Parse()
-
-	cfg := poolparty.PoolConfig{
-		Logger:               log.New(),
-		NumWorkers:           *poolSize,
-		WorkerProc:           flag.Args(),
-		WorkerRequestTimeout: *workerRequestTimeout,
-	}
-
-	pool, err := poolparty.NewWorkerPool(cfg)
-	if err != nil {
-		log.Error("unable to start worker pool", "err", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
-
-	var staticFileHandler fasthttp.RequestHandler
-	var prometheusHandler fasthttp.RequestHandler
-
-	if *staticDir != "" {
-		staticDirPath, err := filepath.Abs(*staticDir)
-		if err != nil {
-			log.Error("unable to determine static file path", "err", err)
-			os.Exit(1)
-		}
-
-		log.Info("serving static files", "dir", staticDirPath)
-		staticFileHandler = fasthttp.FSHandler(staticDirPath, 1)
-	}
-
-	if *enableMetrics {
-		log.Info("serving metrics at /metrics")
-		prometheusHandler = fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler())
-	}
-
-	handler := func(ctx *fasthttp.RequestCtx) {
+func MakeHandler(pool *poolparty.WorkerPool, workerRendezvousTimeout time.Duration) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
 		startt := time.Now()
 		id := fmt.Sprintf("%d", ctx.ID())
 		log := log.New("id", id)
@@ -82,17 +30,6 @@ func main() {
 		method := string(ctx.Method())
 		path := string(uri.Path())
 		log.Info("http request", "path", path, "method", method)
-		defer log.Info("request finished", "duration", time.Now().Sub(startt))
-
-		if staticFileHandler != nil && strings.HasPrefix(path, "/static/") {
-			staticFileHandler(ctx)
-			return
-		}
-
-		if prometheusHandler != nil && path == "/metrics" {
-			prometheusHandler(ctx)
-			return
-		}
 
 		reqHeaders := make(map[string]string)
 		ctx.Request.Header.VisitAll(func(key, value []byte) {
@@ -106,8 +43,8 @@ func main() {
 			Headers: reqHeaders,
 			Method:  string(ctx.Request.Header.Method()),
 			Body:    string(ctx.Request.Body()),
-		}, *workerRendezvousTimeout)
-
+		}, workerRendezvousTimeout)
+		log.Info("janet worker request finished", "duration", time.Now().Sub(startt))
 		if err != nil {
 			log.Error("error while dispatching to janet worker", "err", err)
 			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
@@ -134,6 +71,37 @@ func main() {
 
 		ctx.SetBody(resp.ParsedResponse.GetStringBytes("body"))
 	}
+}
+
+func main() {
+	log.Root().SetHandler(log.StderrHandler)
+
+	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "time to wait for a janet worker to begin a request")
+	workerRequestTimeout := flag.Duration("worker-request-timeout", 60*time.Second, "timeout before a worker is considered crashed")
+	readTimeout := flag.Duration("request-read-timeout", 60*time.Second, "read timeout before an http request is aborted")
+	writeTimeout := flag.Duration("request-write-timeout", 60*time.Second, "write timeout before an http request is aborted")
+	poolSize := flag.Int("pool-size", 1, "number of worker janet processes")
+	requestBacklog := flag.Int("request-backlog", 1024, "number of requests to accept in the backlog")
+	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "number of requests to accept in the backlog")
+	listenOn := flag.String("listen-on", "127.0.0.1:8080", "address to listen on.")
+
+	flag.Parse()
+
+	cfg := poolparty.PoolConfig{
+		Logger:               log.New(),
+		NumWorkers:           *poolSize,
+		WorkerProc:           flag.Args(),
+		WorkerRequestTimeout: *workerRequestTimeout,
+	}
+
+	pool, err := poolparty.NewWorkerPool(cfg)
+	if err != nil {
+		log.Error("unable to start worker pool", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	handler := MakeHandler(pool, *workerRendezvousTimeout)
 
 	server := &fasthttp.Server{
 		Name:               "poolparty",

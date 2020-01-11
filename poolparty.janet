@@ -9,7 +9,8 @@
 
 (defn- fixup-request
   [req & keys]
-  (keys-to-keywords req "headers" "method" "uri" "body"))
+  (keys-to-keywords req 
+    "file" "headers" "method" "uri" "body"))
 
 (defn serve
   [handler &opt inf outf]

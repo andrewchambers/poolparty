@@ -1,38 +1,23 @@
 (import json)
 
-(defn- keys-to-keywords
-  [req & keys]
-  (each k keys
-    (put req (keyword k) (get req k))
-    (put req k nil))
-  req)
-
-(defn- fixup-request
-  [req & keys]
-  (keys-to-keywords req 
-    "file" "headers" "method" "uri" "body"))
-
 (defn serve
   [handler &opt inf outf]
   (setdyn :out stderr)
   (default inf stdin)
   (default outf stdout)
-  (def p (parser/new))
-  (def inbuf (buffer/new 0))
+  (def buf @"")
   (while true
-    (buffer/clear inbuf)
-    (file/read inf :line inbuf)
-    (when (empty? inbuf) (break))
-    (def req (json/decode inbuf))
+    (buffer/clear buf)
+    (file/read inf :line buf)
+    (when (empty? buf) (break))
+    (def req (json/decode buf true true))
     (unless (table? req) (error "malformed request"))
-    # XXX Once we have a protocol that supports janets 
-    # on both sides, we can skip this ugly hack. 
-    (fixup-request req)
     (def resp (handler req))
-    # XXX It would be nice if the encode api would let us reuse the buffer
-    (def respb (json/encode resp))
-    (buffer/push-byte respb (comptime ("\n" 0)))
-    (file/write outf respb)
+    # Reuse buffer
+    (buffer/clear buf)
+    (json/encode resp "" "" buf)
+    (buffer/push-byte buf (comptime ("\n" 0)))
+    (file/write outf buf)
     (file/flush outf)))
 
 (defn main [&]

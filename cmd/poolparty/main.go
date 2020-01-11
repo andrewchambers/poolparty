@@ -10,7 +10,6 @@ import (
 	log "github.com/inconshreveable/log15"
 	flag "github.com/spf13/pflag"
 	"github.com/valyala/fasthttp"
-	"github.com/valyala/fastjson"
 )
 
 type fasthttpLogAdaptor struct {
@@ -19,58 +18,6 @@ type fasthttpLogAdaptor struct {
 
 func (l *fasthttpLogAdaptor) Printf(format string, args ...interface{}) {
 	l.l.Info(fmt.Sprintf(format, args...))
-}
-
-func MakeHandler(pool *poolparty.WorkerPool, workerRendezvousTimeout time.Duration) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		startt := time.Now()
-		id := fmt.Sprintf("%d", ctx.ID())
-		log := log.New("id", id)
-		uri := ctx.Request.URI()
-		method := string(ctx.Method())
-		path := string(uri.Path())
-		log.Info("http request", "path", path, "method", method)
-
-		reqHeaders := make(map[string]string)
-		ctx.Request.Header.VisitAll(func(key, value []byte) {
-			reqHeaders[string(key)] = string(value)
-		})
-
-		resp, err := pool.Dispatch(poolparty.JanetRequest{
-			RequestID: id,
-			// XXX Uri: string(uri.FullURI()),
-			Uri:     string(uri.Path()),
-			Headers: reqHeaders,
-			Method:  string(ctx.Request.Header.Method()),
-			Body:    string(ctx.Request.Body()),
-		}, workerRendezvousTimeout)
-		log.Info("janet worker request finished", "duration", time.Now().Sub(startt))
-		if err != nil {
-			log.Error("error while dispatching to janet worker", "err", err)
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBody([]byte("internal server error\n"))
-			return
-		}
-
-		if resp.ParsedResponse.Exists("file") {
-			fasthttp.ServeFile(ctx, string(resp.ParsedResponse.GetStringBytes("file")))
-			return
-		}
-
-		if resp.ParsedResponse.Exists("status") {
-			ctx.SetStatusCode(resp.ParsedResponse.GetInt("status"))
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusOK)
-		}
-
-		respHeaders := resp.ParsedResponse.GetObject("headers")
-		respHeaders.Visit(func(kBytes []byte, v *fastjson.Value) {
-			vBytes := v.GetStringBytes()
-			ctx.Response.Header.SetBytesKV(kBytes, vBytes)
-		})
-
-		ctx.SetBody(resp.ParsedResponse.GetStringBytes("body"))
-	}
 }
 
 func main() {
@@ -101,7 +48,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	handler := MakeHandler(pool, *workerRendezvousTimeout)
+	handler := poolparty.MakeHTTPHandler(pool, *workerRendezvousTimeout)
 
 	server := &fasthttp.Server{
 		Name:               "poolparty",

@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/inconshreveable/log15"
+	log "github.com/inconshreveable/log15"
+	"github.com/valyala/fasthttp"
 	"github.com/valyala/fastjson"
 )
 
@@ -21,7 +22,7 @@ var (
 )
 
 type PoolConfig struct {
-	Logger               log15.Logger
+	Logger               log.Logger
 	NumWorkers           int
 	WorkerProc           []string
 	WorkerRequestTimeout time.Duration
@@ -63,7 +64,7 @@ type WorkerPool struct {
 
 func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 	if cfg.Logger == nil {
-		cfg.Logger = log15.New()
+		cfg.Logger = log.New()
 	}
 	if cfg.NumWorkers < 0 {
 		return nil, errors.New("pool needs at least one worker")
@@ -295,4 +296,56 @@ func (p *WorkerPool) Dispatch(req JanetRequest, timeout time.Duration) (JanetRes
 func (p *WorkerPool) Close() {
 	p.cancelWorkers()
 	p.wg.Wait()
+}
+
+func MakeHTTPHandler(pool *WorkerPool, workerRendezvousTimeout time.Duration) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		startt := time.Now()
+		id := fmt.Sprintf("%d", ctx.ID())
+		log := log.New("id", id)
+		uri := ctx.Request.URI()
+		method := string(ctx.Method())
+		path := string(uri.Path())
+		log.Info("http request", "path", path, "method", method)
+
+		reqHeaders := make(map[string]string)
+		ctx.Request.Header.VisitAll(func(key, value []byte) {
+			reqHeaders[string(key)] = string(value)
+		})
+
+		resp, err := pool.Dispatch(JanetRequest{
+			RequestID: id,
+			// XXX Uri: string(uri.FullURI()),
+			Uri:     string(uri.Path()),
+			Headers: reqHeaders,
+			Method:  string(ctx.Request.Header.Method()),
+			Body:    string(ctx.Request.Body()),
+		}, workerRendezvousTimeout)
+		log.Info("janet worker request finished", "duration", time.Now().Sub(startt))
+		if err != nil {
+			log.Error("error while dispatching to janet worker", "err", err)
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+			ctx.SetBody([]byte("internal server error\n"))
+			return
+		}
+
+		if resp.ParsedResponse.Exists("file") {
+			fasthttp.ServeFile(ctx, string(resp.ParsedResponse.GetStringBytes("file")))
+			return
+		}
+
+		if resp.ParsedResponse.Exists("status") {
+			ctx.SetStatusCode(resp.ParsedResponse.GetInt("status"))
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusOK)
+		}
+
+		respHeaders := resp.ParsedResponse.GetObject("headers")
+		respHeaders.Visit(func(kBytes []byte, v *fastjson.Value) {
+			vBytes := v.GetStringBytes()
+			ctx.Response.Header.SetBytesKV(kBytes, vBytes)
+		})
+
+		ctx.SetBody(resp.ParsedResponse.GetStringBytes("body"))
+	}
 }

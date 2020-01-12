@@ -153,9 +153,15 @@ func (p *WorkerPool) spawnWorker() {
 		defer p.wg.Done()
 
 		for {
-			logfn := p.cfg.Logfn
 			var cmd *exec.Cmd
 			cmdWorkerWg := &sync.WaitGroup{}
+
+			logfn := func(vpairs ...interface{}) {
+				if cmd != nil && cmd.Process != nil {
+					vpairs = append(vpairs, "worker-pid", cmd.Process.Pid)
+				}
+				p.cfg.Logfn(vpairs...)
+			}
 
 			func() {
 
@@ -188,8 +194,6 @@ func (p *WorkerPool) spawnWorker() {
 				} else {
 					cmd = exec.Command(p.cfg.WorkerProc[0])
 				}
-
-				logfn("msg", "launching worker command", "cmd", cmd)
 
 				cmd.Stdin = p1
 				cmd.Stdout = p4
@@ -230,13 +234,6 @@ func (p *WorkerPool) spawnWorker() {
 				if err != nil {
 					logfn("msg", "unable to spawn worker", "err", err)
 					return
-				}
-
-				workerPid := fmt.Sprintf("%d", cmd.Process.Pid)
-
-				logfn := func(vpairs ...interface{}) {
-					vpairs = append(vpairs, "worker-pid", workerPid)
-					logfn(vpairs...)
 				}
 
 				logfn("msg", "worker spawned")
@@ -372,8 +369,6 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 	logfn := cfg.Logfn
 	return func(ctx *fasthttp.RequestCtx) {
 		uri := ctx.Request.URI()
-		method := string(ctx.Method())
-		path := string(uri.Path())
 		id := fmt.Sprintf("%d", ctx.ID())
 
 		reqHeaders := make(map[string]string)

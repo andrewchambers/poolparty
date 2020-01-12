@@ -2,11 +2,14 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/signal"
 	"time"
 
 	"github.com/andrewchambers/poolparty"
+	"github.com/coolmsg/go-coolmsg"
 	log "github.com/inconshreveable/log15"
 	flag "github.com/spf13/pflag"
 	"github.com/valyala/fasthttp"
@@ -31,6 +34,7 @@ func main() {
 	requestBacklog := flag.Int("request-backlog", 1024, "number of requests to accept in the backlog ")
 	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "number of requests to accept in the backlog")
 	listenOn := flag.String("listen-on", "127.0.0.1:8080", "address to listen on.")
+	ctlSocket := flag.String("ctl-socket", "./poolparty.sock", "control socket you can interact with using poolparty-ctl.")
 
 	flag.Parse()
 
@@ -48,7 +52,26 @@ func main() {
 	}
 	defer pool.Close()
 
-	handler := poolparty.MakeHTTPHandler(pool, *workerRendezvousTimeout)
+	ctlListener, err := net.Listen("unix", *ctlSocket)
+	if err != nil {
+		log.Error("unable to listen on ctl socket", "err", err)
+		os.Exit(1)
+	}
+	defer os.Remove(*ctlSocket)
+
+	ctlServer := coolmsg.NewServer(coolmsg.ServerOptions{
+		ConnOptions: coolmsg.ConnServerOptions{
+			BootstrapFunc: func(c io.ReadWriteCloser) coolmsg.Object { return &poolparty.RootCtlObject{Pool: pool} },
+		},
+	})
+
+	go func() {
+		_ = ctlServer.Serve(ctlListener)
+	}()
+
+	handler := poolparty.MakeHTTPHandler(pool, poolparty.HandlerConfig{
+		WorkerRendezvousTimeout: *workerRendezvousTimeout,
+	})
 
 	server := &fasthttp.Server{
 		Name:               "poolparty",
@@ -69,6 +92,7 @@ func main() {
 		<-c
 		signal.Reset(os.Interrupt)
 		log.Info("got shutdown signal, shutting down")
+		_ = ctlListener.Close()
 		server.Shutdown()
 		close(gracefulShutdown)
 	}()

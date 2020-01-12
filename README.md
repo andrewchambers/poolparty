@@ -23,3 +23,18 @@ Then launch pool party from the command line:
 $ poolparty --pool-size 6 --static-dir ./static -- janet webapp.janet
 ```
 
+To restart the janet workers:
+
+```
+$ poolparty-ctl restart-workers
+```
+
+# Building
+
+Parts of poolparty are implemented in go, to build this you need a recent go compiler then run:
+```
+$ cd cmd/poolparty
+$ go build
+$ cd ../pool-party-ctl
+$ go build
+```

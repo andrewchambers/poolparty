@@ -35,6 +35,6 @@ Parts of poolparty are implemented in go, to build this you need a recent go com
 ```
 $ cd cmd/poolparty
 $ go build
-$ cd ../pool-party-ctl
+$ cd ../poolparty-ctl
 $ go build
 ```

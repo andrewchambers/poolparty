@@ -34,10 +34,3 @@
     (buffer/push-byte respb (comptime ("\n" 0)))
     (file/write outf respb)
     (file/flush outf)))
-
-(defn main [&]
-  (serve
-    (fn [r]
-      @{:status 200
-        :headers { "Content-Type" "text/plain; charset=utf-8" }
-        :body "The pool is ready!"})))

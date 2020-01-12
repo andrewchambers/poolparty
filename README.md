@@ -20,7 +20,7 @@ webapp.janet
 Then launch pool party from the command line:
 
 ```
-$ poolparty --pool-size 6 --static-dir ./static -- janet webapp.janet
+$ poolparty --pool-size 6 -- janet webapp.janet
 ```
 
 To restart the janet workers:

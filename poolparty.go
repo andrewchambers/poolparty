@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/inconshreveable/log15"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fastjson"
 )
@@ -22,7 +21,8 @@ var (
 )
 
 type PoolConfig struct {
-	Logger               log.Logger
+	OnChildOutput        func(ln []byte)
+	Logfn                func(keyvals ...interface{})
 	NumWorkers           int
 	WorkerProc           []string
 	WorkerRequestTimeout time.Duration
@@ -49,6 +49,13 @@ type workRequest struct {
 	RespChan chan workResponse
 }
 
+type ctlRequest struct {
+	Req      interface{}
+	RespChan chan interface{}
+}
+
+type restartWorkerProcRequest struct{}
+
 type workResponse struct {
 	Err  error
 	Resp JanetResponse
@@ -60,11 +67,15 @@ type WorkerPool struct {
 	cancelWorkers func()
 	wg            sync.WaitGroup
 	dispatch      chan workRequest
+	ctl           []chan ctlRequest
 }
 
 func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
-	if cfg.Logger == nil {
-		cfg.Logger = log.New()
+	if cfg.Logfn == nil {
+		cfg.Logfn = func(v ...interface{}) {}
+	}
+	if cfg.OnChildOutput == nil {
+		cfg.OnChildOutput = func(ln []byte) {}
 	}
 	if cfg.NumWorkers < 0 {
 		return nil, errors.New("pool needs at least one worker")
@@ -80,6 +91,7 @@ func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 		cancelWorkers: cancelWorkers,
 		wg:            sync.WaitGroup{},
 		dispatch:      make(chan workRequest),
+		ctl:           []chan ctlRequest{},
 	}
 
 	for i := 0; i < cfg.NumWorkers; i++ {
@@ -89,29 +101,81 @@ func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 	return p, nil
 }
 
+func workerHandleCtlRequest(ctx context.Context, p *WorkerPool, req ctlRequest) (ok bool) {
+	ok = false
+	respChan := req.RespChan
+	switch req := req.Req.(type) {
+	case restartWorkerProcRequest:
+		respChan <- struct{}{}
+		return
+	default:
+		respChan <- fmt.Errorf("unknown request type: %v", req)
+		return
+	}
+}
+
+func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest, out *json.Encoder, in *bufio.Reader) (ok bool) {
+	ok = false
+
+	err := out.Encode(workReq.Req)
+	if err != nil {
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("error writing to worker process: %w", err)}
+		return
+	}
+
+	rawResp, err := in.ReadBytes('\n')
+	if err != nil {
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("decoding worker process response: %w", err)}
+		return
+	}
+
+	parsedResp, err := fastjson.ParseBytes(rawResp)
+	if err != nil {
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("decoding worker process response: %w", err)}
+		return
+	}
+
+	workReq.RespChan <- workResponse{Resp: JanetResponse{
+		RawResponse:    rawResp,
+		ParsedResponse: parsedResp,
+	}}
+
+	ok = true
+	return
+}
+
 func (p *WorkerPool) spawnWorker() {
+	// These are deliberately not buffered.
+	workerIndex := len(p.ctl)
+	p.ctl = append(p.ctl, make(chan ctlRequest))
 	p.wg.Add(1)
 	go func(ctx context.Context) {
 		defer p.wg.Done()
 
 		for {
-			logger := p.cfg.Logger
 			var cmd *exec.Cmd
 			cmdWorkerWg := &sync.WaitGroup{}
+
+			logfn := func(vpairs ...interface{}) {
+				if cmd != nil && cmd.Process != nil {
+					vpairs = append(vpairs, "worker-pid", cmd.Process.Pid)
+				}
+				p.cfg.Logfn(vpairs...)
+			}
 
 			func() {
 
 				perrmsg := "unable to create worker pipes"
 				p1, p2, err := os.Pipe()
 				if err != nil {
-					logger.Error(perrmsg, "err", err)
+					logfn("msg", perrmsg, "err", err)
 					return
 				}
 				defer p1.Close()
 				defer p2.Close()
 				p3, p4, err := os.Pipe()
 				if err != nil {
-					logger.Error(perrmsg, "err", err)
+					logfn("msg", perrmsg, "err", err)
 					return
 				}
 				defer p3.Close()
@@ -119,7 +183,7 @@ func (p *WorkerPool) spawnWorker() {
 
 				p5, p6, err := os.Pipe()
 				if err != nil {
-					logger.Error(perrmsg, "err", err)
+					logfn("msg", perrmsg, "err", err)
 					return
 				}
 				defer p5.Close()
@@ -131,8 +195,6 @@ func (p *WorkerPool) spawnWorker() {
 					cmd = exec.Command(p.cfg.WorkerProc[0])
 				}
 
-				logger.Info("launching worker command", "cmd", cmd)
-
 				cmd.Stdin = p1
 				cmd.Stdout = p4
 				cmd.Stderr = p6
@@ -142,9 +204,9 @@ func (p *WorkerPool) spawnWorker() {
 					defer cmdWorkerWg.Done()
 					brdr := bufio.NewReader(p5)
 					for {
-						ln, err := brdr.ReadString('\n')
-						if ln != "" {
-							logger.Info("worker stderr", "ln", ln)
+						ln, err := brdr.ReadBytes('\n')
+						if len(ln) != 0 {
+							p.cfg.OnChildOutput(ln)
 						}
 						if err != nil {
 							return
@@ -152,14 +214,29 @@ func (p *WorkerPool) spawnWorker() {
 					}
 				}()
 
+				cmdShuttingDown := make(chan struct{})
+				defer close(cmdShuttingDown)
+				cmdWorkerWg.Add(1)
+				go func() {
+					defer cmdWorkerWg.Done()
+					select {
+					case <-ctx.Done():
+						// If the context is cancelled, we need to propagate
+						// the cancellation by closing these fd's early before
+						// the current function returns.
+						_ = p2.Close()
+						_ = p3.Close()
+					case <-cmdShuttingDown:
+					}
+				}()
+
 				err = cmd.Start()
 				if err != nil {
-					logger.Error("unable to spawn worker", "err", err)
+					logfn("msg", "unable to spawn worker", "err", err)
 					return
 				}
 
-				logger = logger.New("pid", fmt.Sprintf("%d", cmd.Process.Pid))
-				logger.Info("worker spawned")
+				logfn("msg", "worker spawned")
 
 				// After the command has started, we need to close our side
 				// of the pipes we gave it.
@@ -171,67 +248,27 @@ func (p *WorkerPool) spawnWorker() {
 				brdr := bufio.NewReader(p3)
 
 				for {
-					var workReq workRequest
-
 					select {
 					case <-p.workerCtx.Done():
 						return
-					case workReq = <-p.dispatch:
-					}
-
-					logger := logger.New("id", workReq.Req.RequestID)
-
-					workerRequestTimeoutTimer := time.AfterFunc(p.cfg.WorkerRequestTimeout, func() {
-						logger.Info("worker request timeout triggered")
-						_ = p2.Close()
-						_ = p3.Close()
-					})
-					defer workerRequestTimeoutTimer.Stop()
-
-					err = encoder.Encode(workReq.Req)
-					if err != nil {
-						logger.Error("unable to forward request to worker", "err", err)
-						select {
-						case <-p.workerCtx.Done():
-							return
-						case workReq.RespChan <- workResponse{Err: fmt.Errorf("error writing to worker process: %w", err)}:
-							logger.Error("writing request fails", "err", err)
+					case ctlRequest := <-p.ctl[workerIndex]:
+						ok := workerHandleCtlRequest(ctx, p, ctlRequest)
+						if !ok {
+							logfn("msg", "Worker restarting due to ctl message")
 							return
 						}
-					}
-
-					rawResp, err := brdr.ReadBytes('\n')
-					if err != nil {
-						select {
-						case <-p.workerCtx.Done():
-							return
-						case workReq.RespChan <- workResponse{Err: fmt.Errorf("decoding worker process response: %w", err)}:
-							return
-						}
-					}
-
-					parsedResp, err := fastjson.ParseBytes(rawResp)
-					if err != nil {
-						select {
-						case <-p.workerCtx.Done():
-							return
-						case workReq.RespChan <- workResponse{Err: fmt.Errorf("decoding worker process response: %w", err)}:
+					case workReq := <-p.dispatch:
+						workerRequestTimeoutTimer := time.AfterFunc(p.cfg.WorkerRequestTimeout, func() {
+							logfn("msg", "janet worker request timed out", "err", "timeout")
+							_ = p2.Close()
+							_ = p3.Close()
+						})
+						ok := workerHandleRequest(ctx, p, workReq, encoder, brdr)
+						timerStopped := workerRequestTimeoutTimer.Stop()
+						if !ok || !timerStopped {
+							logfn("msg", "worker restarting due to error")
 							return
 						}
-					}
-
-					select {
-					case <-p.workerCtx.Done():
-						return
-					case workReq.RespChan <- workResponse{Resp: JanetResponse{
-						RawResponse:    rawResp,
-						ParsedResponse: parsedResp,
-					}}:
-					}
-
-					// Timer has triggered, we need to restart the worker.
-					if !workerRequestTimeoutTimer.Stop() {
-						return
 					}
 				}
 
@@ -247,9 +284,9 @@ func (p *WorkerPool) spawnWorker() {
 
 			if err != nil {
 				if p.workerCtx.Err() == nil {
-					logger.Error("pool worker died", "err", err)
+					logfn("msg", "pool worker died", "err", err)
 				} else {
-					logger.Info("worker shutdown by request")
+					logfn("msg", "worker shutdown by request")
 				}
 			}
 			select {
@@ -264,7 +301,7 @@ func (p *WorkerPool) spawnWorker() {
 
 func (p *WorkerPool) Dispatch(req JanetRequest, timeout time.Duration) (JanetResponse, error) {
 
-	respChan := make(chan workResponse)
+	respChan := make(chan workResponse, 1)
 
 	workReq := workRequest{
 		Req:      req,
@@ -272,14 +309,14 @@ func (p *WorkerPool) Dispatch(req JanetRequest, timeout time.Duration) (JanetRes
 	}
 
 	t := time.NewTimer(timeout)
-	defer t.Stop()
-
 	select {
 	case <-t.C:
 		return JanetResponse{}, ErrWorkerPoolBusy
 	case <-p.workerCtx.Done():
+		t.Stop()
 		return JanetResponse{}, ErrWorkerPoolClosed
 	case p.dispatch <- workReq:
+		t.Stop()
 	}
 
 	select {
@@ -293,20 +330,46 @@ func (p *WorkerPool) Dispatch(req JanetRequest, timeout time.Duration) (JanetRes
 	}
 }
 
+func (p *WorkerPool) RestartWorkers(ctx context.Context) error {
+	for i := 0; i < len(p.ctl); i++ {
+		respChan := make(chan interface{}, 1)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case p.ctl[i] <- ctlRequest{
+			Req:      restartWorkerProcRequest{},
+			RespChan: respChan,
+		}:
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-respChan:
+		}
+	}
+
+	return nil
+}
+
 func (p *WorkerPool) Close() {
 	p.cancelWorkers()
 	p.wg.Wait()
 }
 
-func MakeHTTPHandler(pool *WorkerPool, workerRendezvousTimeout time.Duration) fasthttp.RequestHandler {
+type HandlerConfig struct {
+	Logfn                   func(keyvals ...interface{})
+	WorkerRendezvousTimeout time.Duration
+}
+
+func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandler {
+	if cfg.Logfn == nil {
+		cfg.Logfn = func(v ...interface{}) {}
+	}
+	logfn := cfg.Logfn
 	return func(ctx *fasthttp.RequestCtx) {
-		startt := time.Now()
-		id := fmt.Sprintf("%d", ctx.ID())
-		log := log.New("id", id)
 		uri := ctx.Request.URI()
-		method := string(ctx.Method())
-		path := string(uri.Path())
-		log.Info("http request", "path", path, "method", method)
+		id := fmt.Sprintf("%d", ctx.ID())
 
 		reqHeaders := make(map[string]string)
 		ctx.Request.Header.VisitAll(func(key, value []byte) {
@@ -315,15 +378,14 @@ func MakeHTTPHandler(pool *WorkerPool, workerRendezvousTimeout time.Duration) fa
 
 		resp, err := pool.Dispatch(JanetRequest{
 			RequestID: id,
-			// XXX Uri: string(uri.FullURI()),
-			Uri:     string(uri.Path()),
-			Headers: reqHeaders,
-			Method:  string(ctx.Request.Header.Method()),
-			Body:    string(ctx.Request.Body()),
-		}, workerRendezvousTimeout)
-		log.Info("janet worker request finished", "duration", time.Now().Sub(startt))
+			Uri:       string(uri.FullURI()),
+			Headers:   reqHeaders,
+			Method:    string(ctx.Request.Header.Method()),
+			// XXX This copy could be expensive with a large body.
+			Body: string(ctx.Request.Body()),
+		}, cfg.WorkerRendezvousTimeout)
 		if err != nil {
-			log.Error("error while dispatching to janet worker", "err", err)
+			logfn("msg", "error while dispatching to janet worker", "id", id, "err", err)
 			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 			ctx.SetBody([]byte("internal server error\n"))
 			return

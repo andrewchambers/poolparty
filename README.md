@@ -31,10 +31,9 @@ $ poolparty-ctl restart-workers
 
 # Building
 
-Parts of poolparty are implemented in go, to build this you need a recent go compiler then run:
+Parts of poolparty are implemented in go, to build this you need a recent go compiler, jpm knows how to invoke go:
 ```
-$ cd cmd/poolparty
-$ go build
-$ cd ../poolparty-ctl
-$ go build
+$ cd poolparty
+$ jpm --verbose install
+...
 ```

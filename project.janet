@@ -6,5 +6,24 @@
   :repo "git+https://github.com/andrewchambers/poolparty"
   :dependencies ["json"])
 
+(def poolparty-src [
+    "cmd/poolparty/main.go"
+    "cmd/poolparty-ctl/main.go"
+    "poolparty.go"
+    "go.mod"
+])
+
+(add-dep "build" "build/poolparty")
+(add-dep "build" "build/poolparty-ctl")
+
+(rule "build/poolparty" poolparty-src
+  (shell "go" "build" "-mod=vendor" "-o" "./build/poolparty" "./cmd/poolparty/main.go"))
+
+(rule "build/poolparty-ctl" poolparty-src
+  (shell "go" "build" "-mod=vendor" "-o" "./build/poolparty-ctl" "./cmd/poolparty-ctl/main.go"))
+
 (declare-source
   :source @["poolparty.janet"])
+
+(install-rule "build/poolparty" (dyn :binpath JANET_BINPATH))
+(install-rule "build/poolparty-ctl" (dyn :binpath JANET_BINPATH))

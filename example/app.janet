@@ -1,10 +1,8 @@
 (import uri)
 (import poolparty)
 
-# An example main.
+# An example main function.
 (defn main [&]
-  (setdyn :out stderr)
-
   (poolparty/serve
     (fn [req]
       (def resp @"")

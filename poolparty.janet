@@ -17,7 +17,9 @@
 (defn serve
   [handler &opt inf outf]
   (default inf stdin)
-  (default outf stdout)
+  # By default we pass in an extra file descriptor
+  # that janet doesn't know about, we open this manually.
+  (default outf (file/fdopen 3 :wb))
   (when (= outf (dyn :out))
     (error "server outf should not be the same as :out, hint: (setdyn :out stderr)"))
   (def buf @"")

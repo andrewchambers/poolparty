@@ -30,7 +30,8 @@ type PoolConfig struct {
 
 // XXX would be much better if these were
 // not strings, we probably want msgpack or
-// flatbuffers or something like that.
+// flatbuffers or something like that. So we can
+// losslessly enode janet types.
 type JanetRequest struct {
 	RequestID     string            `json:"poolparty-request-id"`
 	RemoteAddress string            `json:"remote-address"`
@@ -198,12 +199,13 @@ func (p *WorkerPool) spawnWorker() {
 
 				cmd.Stdin = p1
 				cmd.Stdout = p4
-				cmd.Stderr = p6
+				cmd.Stderr = p4
+				cmd.ExtraFiles = []*os.File{p6}
 
 				cmdWorkerWg.Add(1)
 				go func() {
 					defer cmdWorkerWg.Done()
-					brdr := bufio.NewReader(p5)
+					brdr := bufio.NewReader(p3)
 					for {
 						ln, err := brdr.ReadBytes('\n')
 						if len(ln) != 0 {
@@ -226,7 +228,7 @@ func (p *WorkerPool) spawnWorker() {
 						// the cancellation by closing these fd's early before
 						// the current function returns.
 						_ = p2.Close()
-						_ = p3.Close()
+						_ = p5.Close()
 					case <-cmdShuttingDown:
 					}
 				}()
@@ -246,7 +248,7 @@ func (p *WorkerPool) spawnWorker() {
 				_ = p6.Close()
 
 				encoder := json.NewEncoder(p2)
-				brdr := bufio.NewReader(p3)
+				brdr := bufio.NewReader(p5)
 
 				for {
 					select {

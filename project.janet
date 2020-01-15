@@ -10,6 +10,7 @@
     "cmd/poolparty/main.go"
     "cmd/poolparty-ctl/main.go"
     "poolparty.go"
+    "ctl.go"
     "go.mod"
 ])
 

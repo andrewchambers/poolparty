@@ -378,7 +378,7 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 
 		resp, err := pool.Dispatch(JanetRequest{
 			RequestID: id,
-			Uri:       string(uri.FullURI()),
+			Uri:       string(uri.RequestURI()),
 			Headers:   reqHeaders,
 			Method:    string(ctx.Request.Header.Method()),
 			// XXX This copy could be expensive with a large body.

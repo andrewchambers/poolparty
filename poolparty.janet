@@ -10,13 +10,16 @@
 (defn- fixup-request
   [req & keys]
   (keys-to-keywords req
-    "file" "headers" "method" "uri" "body"))
+    "file" "headers" "method"
+    "uri" "body" "remote-address"
+    "poolparty-request-id"))
 
 (defn serve
   [handler &opt inf outf]
-  (setdyn :out stderr)
   (default inf stdin)
   (default outf stdout)
+  (when (= outf (dyn :out))
+    (error "server outf should not be the same as :out, hint: (setdyn :out stderr)"))
   (def buf @"")
   (while true
     (buffer/clear buf)

@@ -32,11 +32,12 @@ type PoolConfig struct {
 // not strings, we probably want msgpack or
 // flatbuffers or something like that.
 type JanetRequest struct {
-	RequestID string            `json:"request-id"`
-	Uri       string            `json:"uri"`
-	Method    string            `json:"method"`
-	Headers   map[string]string `json:"headers"`
-	Body      string            `json:"body"`
+	RequestID     string            `json:"poolparty-request-id"`
+	RemoteAddress string            `json:"remote-address"`
+	Uri           string            `json:"uri"`
+	Method        string            `json:"method"`
+	Headers       map[string]string `json:"headers"`
+	Body          string            `json:"body"`
 }
 
 type JanetResponse struct {
@@ -377,10 +378,11 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 		})
 
 		resp, err := pool.Dispatch(JanetRequest{
-			RequestID: id,
-			Uri:       string(uri.RequestURI()),
-			Headers:   reqHeaders,
-			Method:    string(ctx.Request.Header.Method()),
+			RequestID:     id,
+			RemoteAddress: ctx.RemoteAddr().String(),
+			Uri:           string(uri.FullURI()),
+			Headers:       reqHeaders,
+			Method:        string(ctx.Request.Header.Method()),
 			// XXX This copy could be expensive with a large body.
 			Body: string(ctx.Request.Body()),
 		}, cfg.WorkerRendezvousTimeout)
@@ -405,6 +407,7 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 		respHeaders := resp.ParsedResponse.GetObject("headers")
 		respHeaders.Visit(func(kBytes []byte, v *fastjson.Value) {
 			vBytes := v.GetStringBytes()
+			// XXX Technically we should be merging duplicate headers.
 			ctx.Response.Header.SetBytesKV(kBytes, vBytes)
 		})
 

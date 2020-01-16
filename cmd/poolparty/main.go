@@ -46,7 +46,7 @@ func main() {
 	writeTimeout := flag.Duration("request-write-timeout", 60*time.Second, "write timeout before an http request is aborted")
 	poolSize := flag.Int("pool-size", 1, "number of worker janet processes")
 	requestBacklog := flag.Int("request-backlog", 1024, "number of requests to accept in the backlog ")
-	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "number of requests to accept in the backlog")
+	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "Maximum request size in bytes")
 	listenOn := flag.String("listen-on", "127.0.0.1:8080", "address to listen on.")
 	ctlSocket := flag.String("ctl-socket", "./poolparty.sock", "control socket you can interact with using poolparty-ctl.")
 

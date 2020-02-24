@@ -26,5 +26,9 @@
 (declare-source
   :source @["poolparty.janet"])
 
+(declare-native
+  :name "_poolparty"
+  :source @["poolparty.c"])
+
 (install-rule "build/poolparty" (dyn :binpath JANET_BINPATH))
 (install-rule "build/poolparty-ctl" (dyn :binpath JANET_BINPATH))

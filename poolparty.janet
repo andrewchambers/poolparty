@@ -1,4 +1,5 @@
 (import json)
+(import _poolparty)
 
 (defn- keys-to-keywords
   [req & keys]
@@ -19,7 +20,7 @@
   (default inf stdin)
   # By default we pass in an extra file descriptor
   # that janet doesn't know about, we open this manually.
-  (default outf (file/fdopen 3 :wb))
+  (default outf (_poolparty/out-fdopen 3))
   (when (nil? outf)
     (error "unable to open output fd, this is fd 3 by default."))
   (when (= outf (dyn :out))

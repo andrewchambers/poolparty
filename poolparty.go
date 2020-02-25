@@ -408,9 +408,13 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 
 		respHeaders := resp.ParsedResponse.GetObject("headers")
 		respHeaders.Visit(func(kBytes []byte, v *fastjson.Value) {
-			vBytes := v.GetStringBytes()
-			// XXX Technically we should be merging duplicate headers.
-			ctx.Response.Header.SetBytesKV(kBytes, vBytes)
+			if vs := v.GetArray(); vs != nil {
+				for _, v := range vs {
+					ctx.Response.Header.AddBytesKV(kBytes, v.GetStringBytes())
+				}
+			} else {
+				ctx.Response.Header.SetBytesKV(kBytes, v.GetStringBytes())
+			}
 		})
 
 		ctx.SetBody(resp.ParsedResponse.GetStringBytes("body"))

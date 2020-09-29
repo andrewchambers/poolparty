@@ -2,17 +2,20 @@ package poolparty
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
+	"git.sr.ht/~sircmpwn/go-bare"
 	"github.com/valyala/fasthttp"
-	"github.com/valyala/fastjson"
 )
 
 var (
@@ -28,27 +31,29 @@ type PoolConfig struct {
 	WorkerRequestTimeout time.Duration
 }
 
-// XXX would be much better if these were
-// not strings, we probably want msgpack or
-// flatbuffers or something like that. So we can
-// losslessly enode janet types.
-type JanetRequest struct {
-	RequestID     string            `json:"poolparty-request-id"`
-	RemoteAddress string            `json:"remote-address"`
-	Uri           string            `json:"uri"`
-	Method        string            `json:"method"`
-	Headers       map[string]string `json:"headers"`
-	Body          string            `json:"body"`
-}
-
-type JanetResponse struct {
-	RawResponse    []byte
-	ParsedResponse *fastjson.Value
+type HTTPRequest struct {
+	RemoteAddress string
+	Uri           string
+	Method        string
+	Headers       map[string]string
+	Body          []byte
+	RespChan      chan workResponse
 }
 
 type workRequest struct {
-	Req      JanetRequest
+	Req      HTTPRequest
 	RespChan chan workResponse
+}
+
+type HTTPResponse struct {
+	Status  int
+	Headers map[string][]string
+	Body    []byte
+}
+
+type workResponse struct {
+	Err  error
+	Resp HTTPResponse
 }
 
 type ctlRequest struct {
@@ -57,11 +62,6 @@ type ctlRequest struct {
 }
 
 type restartWorkerProcRequest struct{}
-
-type workResponse struct {
-	Err  error
-	Resp JanetResponse
-}
 
 type WorkerPool struct {
 	cfg           PoolConfig
@@ -116,31 +116,106 @@ func workerHandleCtlRequest(ctx context.Context, p *WorkerPool, req ctlRequest) 
 	}
 }
 
-func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest, out *json.Encoder, in *bufio.Reader) (ok bool) {
+func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest, out io.Writer, in io.Reader) (ok bool) {
 	ok = false
 
-	err := out.Encode(workReq.Req)
-	if err != nil {
-		workReq.RespChan <- workResponse{Err: fmt.Errorf("error writing to worker process: %w", err)}
+	var buf bytes.Buffer
+	buf.Grow(256)
+	bw := bare.NewWriter(&buf)
+	// Reserve space for size.
+	_ = bw.WriteU32(0)
+	// Request variant.
+	_ = bw.WriteUint(0)
+	_ = bw.WriteString(workReq.Req.RemoteAddress)
+	_ = bw.WriteString(workReq.Req.Uri)
+	_ = bw.WriteString(workReq.Req.Method)
+	_ = bw.WriteUint(uint64(len(workReq.Req.Headers)))
+	for k, v := range workReq.Req.Headers {
+		_ = bw.WriteString(k)
+		_ = bw.WriteString(v)
+	}
+	_ = bw.WriteUint(uint64(len(workReq.Req.Body)))
+
+	bufBytes := buf.Bytes()
+
+	reqLen := len(bufBytes) + len(workReq.Req.Body) - 4
+	if reqLen > 0x7fffffff {
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("request body too large")}
 		return
 	}
 
-	rawResp, err := in.ReadBytes('\n')
+	binary.LittleEndian.PutUint32(bufBytes, uint32(reqLen))
+
+	_, err := out.Write(buf.Bytes())
 	if err != nil {
-		workReq.RespChan <- workResponse{Err: fmt.Errorf("decoding worker process response: %w", err)}
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("writing header failed: %w", err)}
 		return
 	}
 
-	parsedResp, err := fastjson.ParseBytes(rawResp)
+	_, err = out.Write(workReq.Req.Body)
 	if err != nil {
-		workReq.RespChan <- workResponse{Err: fmt.Errorf("decoding worker process response: %w", err)}
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("writing body failed: %w", err)}
 		return
 	}
 
-	workReq.RespChan <- workResponse{Resp: JanetResponse{
-		RawResponse:    rawResp,
-		ParsedResponse: parsedResp,
-	}}
+	lenBuf := [4]byte{}
+	_, err = in.Read(lenBuf[:])
+	if err != nil {
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("unable to worker read response length: %w", err)}
+		return
+	}
+
+	respLen := binary.LittleEndian.Uint32(lenBuf[:])
+	if respLen > 0x7fffffff {
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("reponse too large")}
+		return
+	}
+
+	buf.Reset()
+	buf.Grow(int(respLen))
+
+	_, err = buf.ReadFrom(&io.LimitedReader{R: in, N: int64(respLen)})
+	if err != nil {
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("unable to read response")}
+		return
+	}
+
+	br := bare.NewReader(&buf)
+	// Because we are reading from a buffer, we ignore errors as there
+	// should be no failures.
+	//
+	// If the request comes out wonky, it because of a bug in the
+	// worker dispatcher writing corrupt responses, so they will
+	// just get a bogus response.
+
+	variant, _ := br.ReadUint()
+	switch variant {
+	case 0:
+		status, _ := br.ReadUint()
+		numHeaders, _ := br.ReadUint()
+		headers := make(map[string][]string)
+		for i := uint64(0); i < numHeaders; i++ {
+			hdr, _ := br.ReadString()
+			numValues, _ := br.ReadUint()
+			values := []string{}
+			for j := uint64(0); j < numValues; j++ {
+				value, _ := br.ReadString()
+				values = append(values, value)
+			}
+			headers[hdr] = values
+		}
+
+		body, _ := br.ReadData()
+
+		workReq.RespChan <- workResponse{Resp: HTTPResponse{
+			Status:  int(status),
+			Headers: headers,
+			Body:    body,
+		}}
+	default:
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("client send unknown response variant")}
+		return
+	}
 
 	ok = true
 	return
@@ -151,6 +226,9 @@ func (p *WorkerPool) spawnWorker() {
 	workerIndex := len(p.ctl)
 	p.ctl = append(p.ctl, make(chan ctlRequest))
 	p.wg.Add(1)
+
+	var workerProcessError error
+
 	go func(ctx context.Context) {
 		defer p.wg.Done()
 
@@ -239,6 +317,14 @@ func (p *WorkerPool) spawnWorker() {
 					return
 				}
 
+				workerCmdDied := make(chan struct{})
+				cmdWorkerWg.Add(1)
+				go func() {
+					defer cmdWorkerWg.Done()
+					defer close(workerCmdDied)
+					workerProcessError = cmd.Wait()
+				}()
+
 				logfn("msg", "worker spawned")
 
 				// After the command has started, we need to close our side
@@ -247,12 +333,11 @@ func (p *WorkerPool) spawnWorker() {
 				_ = p4.Close()
 				_ = p6.Close()
 
-				encoder := json.NewEncoder(p2)
-				brdr := bufio.NewReader(p5)
-
 				for {
 					select {
 					case <-p.workerCtx.Done():
+						return
+					case <-workerCmdDied:
 						return
 					case ctlRequest := <-p.ctl[workerIndex]:
 						ok := workerHandleCtlRequest(ctx, p, ctlRequest)
@@ -262,11 +347,10 @@ func (p *WorkerPool) spawnWorker() {
 						}
 					case workReq := <-p.dispatch:
 						workerRequestTimeoutTimer := time.AfterFunc(p.cfg.WorkerRequestTimeout, func() {
-							logfn("msg", "janet worker request timed out", "err", "timeout")
-							_ = p2.Close()
-							_ = p3.Close()
+							logfn("msg", "janet worker request timed out, aborting request")
+							_ = cmd.Process.Signal(syscall.SIGTERM)
 						})
-						ok := workerHandleRequest(ctx, p, workReq, encoder, brdr)
+						ok := workerHandleRequest(ctx, p, workReq, p2, p5)
 						timerStopped := workerRequestTimeoutTimer.Stop()
 						if !ok || !timerStopped {
 							logfn("msg", "worker restarting due to error")
@@ -277,20 +361,12 @@ func (p *WorkerPool) spawnWorker() {
 
 			}()
 
-			// Ensure child is gone before we try again.
-			var err error
-
-			if cmd != nil {
-				err = cmd.Wait()
-			}
 			cmdWorkerWg.Wait()
 
-			if err != nil {
-				if p.workerCtx.Err() == nil {
-					logfn("msg", "pool worker died", "err", err)
-				} else {
-					logfn("msg", "worker shutdown by request")
-				}
+			if p.workerCtx.Err() == nil {
+				logfn("msg", "pool worker died", "err", workerProcessError)
+			} else {
+				logfn("msg", "worker shutdown by request")
 			}
 			select {
 			case <-p.workerCtx.Done():
@@ -302,7 +378,7 @@ func (p *WorkerPool) spawnWorker() {
 	}(p.workerCtx)
 }
 
-func (p *WorkerPool) Dispatch(req JanetRequest, timeout time.Duration) (JanetResponse, error) {
+func (p *WorkerPool) Dispatch(req HTTPRequest, timeout time.Duration) (HTTPResponse, error) {
 
 	respChan := make(chan workResponse, 1)
 
@@ -314,20 +390,20 @@ func (p *WorkerPool) Dispatch(req JanetRequest, timeout time.Duration) (JanetRes
 	t := time.NewTimer(timeout)
 	select {
 	case <-t.C:
-		return JanetResponse{}, ErrWorkerPoolBusy
+		return HTTPResponse{}, ErrWorkerPoolBusy
 	case <-p.workerCtx.Done():
 		t.Stop()
-		return JanetResponse{}, ErrWorkerPoolClosed
+		return HTTPResponse{}, ErrWorkerPoolClosed
 	case p.dispatch <- workReq:
 		t.Stop()
 	}
 
 	select {
 	case <-p.workerCtx.Done():
-		return JanetResponse{}, ErrWorkerPoolClosed
+		return HTTPResponse{}, ErrWorkerPoolClosed
 	case r := <-workReq.RespChan:
 		if r.Err != nil {
-			return JanetResponse{}, fmt.Errorf("request failed: %w", r.Err)
+			return HTTPResponse{}, fmt.Errorf("request failed: %w", r.Err)
 		}
 		return r.Resp, nil
 	}
@@ -372,51 +448,32 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 	logfn := cfg.Logfn
 	return func(ctx *fasthttp.RequestCtx) {
 		uri := ctx.Request.URI()
-		id := fmt.Sprintf("%d", ctx.ID())
 
 		reqHeaders := make(map[string]string)
 		ctx.Request.Header.VisitAll(func(key, value []byte) {
 			reqHeaders[string(key)] = string(value)
 		})
 
-		resp, err := pool.Dispatch(JanetRequest{
-			RequestID:     id,
+		resp, err := pool.Dispatch(HTTPRequest{
 			RemoteAddress: ctx.RemoteAddr().String(),
 			Uri:           string(uri.FullURI()),
 			Headers:       reqHeaders,
 			Method:        string(ctx.Request.Header.Method()),
-			// XXX This copy could be expensive with a large body.
-			Body: string(ctx.Request.Body()),
+			Body:          ctx.Request.Body(),
 		}, cfg.WorkerRendezvousTimeout)
 		if err != nil {
-			logfn("msg", "error while dispatching to janet worker", "id", id, "err", err)
+			logfn("msg", "error while dispatching to worker", "err", err)
 			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 			ctx.SetBody([]byte("internal server error\n"))
 			return
 		}
 
-		if resp.ParsedResponse.Exists("file") {
-			fasthttp.ServeFile(ctx, string(resp.ParsedResponse.GetStringBytes("file")))
-			return
-		}
-
-		if resp.ParsedResponse.Exists("status") {
-			ctx.SetStatusCode(resp.ParsedResponse.GetInt("status"))
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusOK)
-		}
-
-		respHeaders := resp.ParsedResponse.GetObject("headers")
-		respHeaders.Visit(func(kBytes []byte, v *fastjson.Value) {
-			if vs := v.GetArray(); vs != nil {
-				for _, v := range vs {
-					ctx.Response.Header.AddBytesKV(kBytes, v.GetStringBytes())
-				}
-			} else {
-				ctx.Response.Header.SetBytesKV(kBytes, v.GetStringBytes())
+		ctx.SetStatusCode(resp.Status)
+		for hdr, values := range resp.Headers {
+			for _, value := range values {
+				ctx.Response.Header.Add(hdr, value)
 			}
-		})
-
-		ctx.SetBody(resp.ParsedResponse.GetStringBytes("body"))
+		}
+		ctx.SetBody(resp.Body)
 	}
 }

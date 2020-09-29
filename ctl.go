@@ -4,24 +4,44 @@ import (
 	"context"
 	"sync"
 
-	"github.com/coolmsg/go-coolmsg"
+	"git.sr.ht/~sircmpwn/go-bare"
+	"github.com/andrewchambers/srop"
 )
 
 const (
-	TYPE_RESTART_JANET_WORKERS = 0x8b7a7f45627b6e31
+	TYPE_RESTART_WORKERS = 0x8b7a7f45627b6e31
+	TYPE_CTL_ERROR       = 0x9a5eec3c075dcd01
 )
 
-type RestartJanetWorkersMsg struct {
+type RestartWorkersMsg struct {
 }
 
-func (m *RestartJanetWorkersMsg) CoolMsg_TypeId() uint64  { return TYPE_RESTART_JANET_WORKERS }
-func (m *RestartJanetWorkersMsg) CoolMsg_Marshal() []byte { return coolmsg.MsgpackMarshal(m) }
-func (m *RestartJanetWorkersMsg) CoolMsg_Unmarshal(buf []byte) bool {
-	return coolmsg.MsgpackUnmarshal(buf, m)
+func (m *RestartWorkersMsg) SropType() uint64    { return TYPE_RESTART_WORKERS }
+func (m *RestartWorkersMsg) SropMarshal() []byte { return []byte{} }
+func (m *RestartWorkersMsg) SropUnmarshal(buf []byte) bool {
+
+	return true
+}
+
+type CtlError struct {
+	Msg string
+}
+
+func (m *CtlError) SropType() uint64 { return TYPE_RESTART_WORKERS }
+func (m *CtlError) SropMarshal() []byte {
+	buf, err := bare.Marshal(m)
+	if err != nil {
+		panic(err)
+	}
+	return buf
+}
+func (m *CtlError) SropUnmarshal(buf []byte) bool {
+	return bare.Unmarshal(buf, m) == nil
 }
 
 func init() {
-	coolmsg.RegisterMessage(TYPE_RESTART_JANET_WORKERS, func() coolmsg.Message { return &RestartJanetWorkersMsg{} })
+	srop.RegisterMessage(TYPE_RESTART_WORKERS, func() srop.Message { return &RestartWorkersMsg{} })
+	srop.RegisterMessage(TYPE_CTL_ERROR, func() srop.Message { return &CtlError{} })
 }
 
 type RootCtlObject struct {
@@ -29,28 +49,28 @@ type RootCtlObject struct {
 	Pool *WorkerPool
 }
 
-func (r *RootCtlObject) Message(ctx context.Context, cs *coolmsg.ConnServer, m coolmsg.Message, respond coolmsg.RespondFunc) {
+func (r *RootCtlObject) Message(ctx context.Context, cs *srop.ConnServer, m srop.Message, respond srop.RespondFunc) {
 	r.m.Lock() // Super coarse locking, we don't need more for now.
 	defer r.m.Unlock()
 
 	switch m.(type) {
-	case *RestartJanetWorkersMsg:
+	case *RestartWorkersMsg:
 		err := r.Pool.RestartWorkers(ctx)
 		if err != nil {
-			respond(&coolmsg.Error{Code: coolmsg.ERRCODE_GENERIC, Display: err.Error()})
+			respond(&CtlError{Msg: err.Error()})
 		} else {
-			respond(&coolmsg.Ok{})
+			respond(&srop.Ok{})
 		}
 	default:
-		respond(coolmsg.ErrUnexpectedMessage)
+		respond(&srop.UnexpectedMessage{})
 	}
 }
 
-func (r *RootCtlObject) UnknownMessage(ctx context.Context, cs *coolmsg.ConnServer, t uint64, buf []byte, respond coolmsg.RespondFunc) {
-	respond(coolmsg.ErrUnexpectedMessage)
+func (r *RootCtlObject) UnknownMessage(ctx context.Context, cs *srop.ConnServer, t uint64, buf []byte, respond srop.RespondFunc) {
+	respond(&srop.UnexpectedMessage{})
 }
 
 // Clunk is the cleanup method of an object, the name Clunk comes from the 9p protocol.
 // An object is clunked when a server is done with it.
-func (r *RootCtlObject) Clunk(cs *coolmsg.ConnServer) {
+func (r *RootCtlObject) Clunk(cs *srop.ConnServer) {
 }

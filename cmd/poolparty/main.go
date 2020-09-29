@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/andrewchambers/poolparty"
-	"github.com/coolmsg/go-coolmsg"
+	"github.com/andrewchambers/srop"
 	"github.com/go-logfmt/logfmt"
 	flag "github.com/spf13/pflag"
 	"github.com/valyala/fasthttp"
@@ -41,7 +41,7 @@ func (l *fasthttpLogAdaptor) Printf(format string, args ...interface{}) {
 
 func main() {
 	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "time to wait for a janet worker to accept a request")
-	workerRequestTimeout := flag.Duration("worker-request-timeout", 60*time.Second, "timeout before a worker is considered crashed")
+	workerRequestTimeout := flag.Duration("worker-request-timeout", 15*time.Second, "timeout before a worker is considered crashed")
 	readTimeout := flag.Duration("request-read-timeout", 60*time.Second, "read timeout before an http request is aborted")
 	writeTimeout := flag.Duration("request-write-timeout", 60*time.Second, "write timeout before an http request is aborted")
 	poolSize := flag.Int("pool-size", 1, "number of worker janet processes")
@@ -74,9 +74,9 @@ func main() {
 	}
 	defer os.Remove(*ctlSocket)
 
-	ctlServer := coolmsg.NewServer(coolmsg.ServerOptions{
-		ConnOptions: coolmsg.ConnServerOptions{
-			BootstrapFunc: func(c io.ReadWriteCloser) coolmsg.Object { return &poolparty.RootCtlObject{Pool: pool} },
+	ctlServer := srop.NewServer(srop.ServerOptions{
+		ConnOptions: srop.ConnServerOptions{
+			BootstrapFunc: func(c io.ReadWriteCloser) srop.Object { return &poolparty.RootCtlObject{Pool: pool} },
 		},
 	})
 

@@ -1,19 +1,4 @@
-(import json)
 (import _poolparty)
-
-(defn- keys-to-keywords
-  [req & keys]
-  (each k keys
-    (put req (keyword k) (get req k))
-    (put req k nil))
-  req)
-
-(defn- fixup-request
-  [req & keys]
-  (keys-to-keywords req
-    "file" "headers" "method"
-    "uri" "body" "remote-address"
-    "poolparty-request-id"))
 
 (defn serve
   [handler &opt inf outf]
@@ -27,16 +12,8 @@
     (error "server outf should not be the same as :out, hint: (setdyn :out stderr)"))
   (def buf @"")
   (while true
-    (buffer/clear buf)
-    (file/read inf :line buf)
-    (when (empty? buf) (break))
-    (def req (json/decode buf false true))
-    (unless (table? req) (error "malformed request"))
-    (fixup-request req)
+    (def req (_poolparty/read-request inf))
     (def resp (handler req))
-    # Reuse buffer
-    (buffer/clear buf)
-    (json/encode resp "" "" buf)
-    (buffer/push-byte buf (comptime ("\n" 0)))
+    (_poolparty/format-response resp buf)
     (file/write outf buf)
     (file/flush outf)))

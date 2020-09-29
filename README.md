@@ -40,13 +40,13 @@ $ jpm --verbose install
 
 # Poolparty <-> Worker protocol
 
-Poolparty communicates requests with workers one at a time, a request is first written to the worker's STDIN and once that request is handled, the workers response is written to the file descriptor 3 (chosen to separate it from application logging to stderr or stdout).
+Poolparty communicates requests with workers one at a time, a request is first written to the worker's stdin and once that request is handled, the worker must write a response to file descriptor 3 (chosen to separate it from application logging to stderr or stdout).
 
 Pool party workers request and response packets follow a simple length prefix format:
 
 ```
 size: int32 # little endian
-payload: [size]data # simple byte format
+payload: data<size> # fixed size byte array
 ```
 
 In this format the request/response payload is encoded following this [BARE](https://baremessages.org) schema:
@@ -62,7 +62,6 @@ type HTTPRequest {
 }
 
 type Request = HTTPRequest | ... Reserved
-
 
 type HTTPResponse {
   status: uint

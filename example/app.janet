@@ -1,11 +1,9 @@
 (import poolparty)
 
-# An example main function.
+(defn handler [req]
+  @{:status 200
+    :body "ok!"
+    :headers {"Content-Type" "text/plain; charset=utf-8"}})
+
 (defn main [&]
-  (poolparty/serve
-    (fn [req]
-      @{:status 200
-        :headers 
-          {"Content-Type" "text/plain; charset=utf-8"
-           "Keep-Alive" "0"}
-        :body @"hello world!"})))
+  (poolparty/serve handler))

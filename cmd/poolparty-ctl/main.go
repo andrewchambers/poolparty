@@ -45,11 +45,62 @@ func main() {
 		switch m := m.(type) {
 		case *poolparty.CtlError:
 			fmt.Fprintf(os.Stderr, "Error processing request: %s", m.Msg)
-			os.Exit(1)		
+			os.Exit(1)
 		case *srop.Ok:
 		}
+	case "spawn-worker":
+		flag.Parse()
+		client := mustConnect(*ctlSocket)
+		defer client.Close()
+		m, err := client.Send(srop.BOOTSTRAP_OBJECT_ID, &poolparty.SpawnWorkerMsg{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error sending request: %s", err.Error())
+			os.Exit(1)
+		}
+		switch m := m.(type) {
+		case *poolparty.CtlError:
+			fmt.Fprintf(os.Stderr, "Error processing request: %s", m.Msg)
+			os.Exit(1)
+		case *srop.Ok:
+		}
+	case "remove-worker":
+		flag.Parse()
+		client := mustConnect(*ctlSocket)
+		defer client.Close()
+		m, err := client.Send(srop.BOOTSTRAP_OBJECT_ID, &poolparty.RemoveWorkerMsg{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error sending request: %s", err.Error())
+			os.Exit(1)
+		}
+		switch m := m.(type) {
+		case *poolparty.CtlError:
+			fmt.Fprintf(os.Stderr, "Error processing request: %s", m.Msg)
+			os.Exit(1)
+		case *srop.Ok:
+		}
+	case "worker-count":
+		flag.Parse()
+		client := mustConnect(*ctlSocket)
+		defer client.Close()
+		m, err := client.Send(srop.BOOTSTRAP_OBJECT_ID, &poolparty.WorkerCountMsg{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error sending request: %s", err.Error())
+			os.Exit(1)
+		}
+		switch m := m.(type) {
+		case *poolparty.CtlError:
+			fmt.Fprintf(os.Stderr, "Error processing request: %s", m.Msg)
+			os.Exit(1)
+		case *poolparty.WorkerCountMsg:
+			if m.Count != nil {
+				_, err := fmt.Printf("%d\n", *m.Count)
+				if err != nil {
+					os.Exit(1)
+				}
+			}
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "Expected a command, one of [restart-workers]")
+		fmt.Fprintf(os.Stderr, "Expected a command, one of [restart-workers, spawn-worker, remove-worker, worker-count]")
 		os.Exit(1)
 	}
 }

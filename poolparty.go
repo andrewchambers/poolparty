@@ -62,14 +62,16 @@ type ctlRequest struct {
 }
 
 type restartWorkerProcRequest struct{}
+type removeWorkerProcRequest struct{}
 
 type WorkerPool struct {
-	cfg           PoolConfig
-	workerCtx     context.Context
-	cancelWorkers func()
-	wg            sync.WaitGroup
-	dispatch      chan workRequest
-	ctl           []chan ctlRequest
+	cfg              PoolConfig
+	workerCtx        context.Context
+	cancelAllWorkers func()
+	wg               sync.WaitGroup
+	dispatch         chan workRequest
+	ctl              []chan ctlRequest
+	cancelWorker     []func()
 }
 
 func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
@@ -79,41 +81,27 @@ func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 	if cfg.OnChildOutput == nil {
 		cfg.OnChildOutput = func(ln []byte) {}
 	}
-	if cfg.NumWorkers < 0 {
-		return nil, errors.New("pool needs at least one worker")
-	}
+
 	if len(cfg.WorkerProc) <= 0 {
 		return nil, errors.New("pool worker proc must not be empty")
 	}
 
-	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	workerCtx, cancelAllWorkers := context.WithCancel(context.Background())
 	p := &WorkerPool{
-		cfg:           cfg,
-		workerCtx:     workerCtx,
-		cancelWorkers: cancelWorkers,
-		wg:            sync.WaitGroup{},
-		dispatch:      make(chan workRequest),
-		ctl:           []chan ctlRequest{},
+		cfg:              cfg,
+		workerCtx:        workerCtx,
+		cancelAllWorkers: cancelAllWorkers,
+		wg:               sync.WaitGroup{},
+		dispatch:         make(chan workRequest),
+		ctl:              []chan ctlRequest{},
+		cancelWorker:     []func(){},
 	}
 
 	for i := 0; i < cfg.NumWorkers; i++ {
-		p.spawnWorker()
+		p.SpawnWorker()
 	}
 
 	return p, nil
-}
-
-func workerHandleCtlRequest(ctx context.Context, p *WorkerPool, req ctlRequest) (ok bool) {
-	ok = false
-	respChan := req.RespChan
-	switch req := req.Req.(type) {
-	case restartWorkerProcRequest:
-		respChan <- struct{}{}
-		return
-	default:
-		respChan <- fmt.Errorf("unknown request type: %v", req)
-		return
-	}
 }
 
 func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest, out io.Writer, in io.Reader) (ok bool) {
@@ -167,7 +155,7 @@ func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest
 
 	respLen := binary.LittleEndian.Uint32(lenBuf[:])
 	if respLen > 0x7fffffff {
-		workReq.RespChan <- workResponse{Err: fmt.Errorf("reponse too large")}
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("response too large")}
 		return
 	}
 
@@ -221,15 +209,27 @@ func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest
 	return
 }
 
-func (p *WorkerPool) spawnWorker() {
+func (p *WorkerPool) WorkerCount() uint {
+	return uint(len(p.ctl))
+}
+
+func (p *WorkerPool) RemoveWorker() {
+	if len(p.ctl) > 0 {
+		p.cancelWorker[len(p.cancelWorker)-1]()
+		p.ctl = p.ctl[:len(p.ctl)-1]
+		p.cancelWorker = p.cancelWorker[:len(p.cancelWorker)-1]
+	}
+}
+
+func (p *WorkerPool) SpawnWorker() {
 	// These are deliberately not buffered.
-	workerIndex := len(p.ctl)
-	p.ctl = append(p.ctl, make(chan ctlRequest))
+	ctx, cancelWorker := context.WithCancel(p.workerCtx)
+	ctl := make(chan ctlRequest)
+	p.ctl = append(p.ctl, ctl)
+	p.cancelWorker = append(p.cancelWorker, cancelWorker)
 	p.wg.Add(1)
 
-	var workerProcessError error
-
-	go func(ctx context.Context) {
+	go func() {
 		defer p.wg.Done()
 
 		for {
@@ -242,6 +242,8 @@ func (p *WorkerPool) spawnWorker() {
 				}
 				p.cfg.Logfn(vpairs...)
 			}
+
+			var workerProcessError error
 
 			func() {
 
@@ -335,14 +337,20 @@ func (p *WorkerPool) spawnWorker() {
 
 				for {
 					select {
-					case <-p.workerCtx.Done():
+					case <-ctx.Done():
+						_ = cmd.Process.Signal(syscall.SIGTERM)
 						return
 					case <-workerCmdDied:
 						return
-					case ctlRequest := <-p.ctl[workerIndex]:
-						ok := workerHandleCtlRequest(ctx, p, ctlRequest)
-						if !ok {
-							logfn("msg", "Worker restarting due to ctl message")
+					case ctlRequest := <-ctl:
+						respChan := ctlRequest.RespChan
+						switch req := ctlRequest.Req.(type) {
+						case restartWorkerProcRequest:
+							_ = cmd.Process.Signal(syscall.SIGTERM)
+							respChan <- struct{}{}
+							return
+						default:
+							respChan <- fmt.Errorf("unknown request type: %v", req)
 							return
 						}
 					case workReq := <-p.dispatch:
@@ -363,19 +371,19 @@ func (p *WorkerPool) spawnWorker() {
 
 			cmdWorkerWg.Wait()
 
-			if p.workerCtx.Err() == nil {
+			if ctx.Err() == nil {
 				logfn("msg", "pool worker died", "err", workerProcessError)
 			} else {
 				logfn("msg", "worker shutdown by request")
 			}
 			select {
-			case <-p.workerCtx.Done():
+			case <-ctx.Done():
 				return
 			case <-time.After(200 * time.Millisecond):
 			}
 		}
 
-	}(p.workerCtx)
+	}()
 }
 
 func (p *WorkerPool) Dispatch(req HTTPRequest, timeout time.Duration) (HTTPResponse, error) {
@@ -432,7 +440,7 @@ func (p *WorkerPool) RestartWorkers(ctx context.Context) error {
 }
 
 func (p *WorkerPool) Close() {
-	p.cancelWorkers()
+	p.cancelAllWorkers()
 	p.wg.Wait()
 }
 

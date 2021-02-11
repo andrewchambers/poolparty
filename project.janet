@@ -3,8 +3,7 @@
   :author "Andrew Chambers"
   :license "MIT"
   :url "https://github.com/andrewchambers/poolparty"
-  :repo "git+https://github.com/andrewchambers/poolparty"
-  :dependencies ["json"])
+  :repo "git+https://github.com/andrewchambers/poolparty")
 
 (def poolparty-src [
     "cmd/poolparty/main.go"

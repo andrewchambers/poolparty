@@ -222,8 +222,8 @@ func (p *WorkerPool) RemoveWorker() {
 }
 
 func (p *WorkerPool) SpawnWorker() {
-	// These are deliberately not buffered.
 	ctx, cancelWorker := context.WithCancel(p.workerCtx)
+	// These are deliberately not buffered.
 	ctl := make(chan ctlRequest)
 	p.ctl = append(p.ctl, ctl)
 	p.cancelWorker = append(p.cancelWorker, cancelWorker)

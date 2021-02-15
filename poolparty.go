@@ -478,8 +478,12 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 
 		ctx.SetStatusCode(resp.Status)
 		for hdr, values := range resp.Headers {
-			for _, value := range values {
-				ctx.Response.Header.Add(hdr, value)
+			for i, value := range values {
+				if i == 0 {
+					ctx.Response.Header.Set(hdr, value)
+				} else {
+					ctx.Response.Header.Add(hdr, value)
+				}
 			}
 		}
 		ctx.SetBody(resp.Body)

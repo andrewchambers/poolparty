@@ -1,4 +1,4 @@
-# go-bare [![GoDoc](https://godoc.org/git.sr.ht/~sircmpwn/go-bare?status.svg)](https://godoc.org/git.sr.ht/~sircmpwn/go-bare) [![builds.sr.ht status](https://builds.sr.ht/~sircmpwn/go-bare.svg)](https://builds.sr.ht/~sircmpwn/go-bare?)
+# go-bare [![godocs.io](https://godocs.io/git.sr.ht/~sircmpwn/go-bare?status.svg)](https://godocs.io/git.sr.ht/~sircmpwn/go-bare) [![builds.sr.ht status](https://builds.sr.ht/~sircmpwn/go-bare.svg)](https://builds.sr.ht/~sircmpwn/go-bare?)
 
 An implementation of the [BARE](https://baremessages.org) message format
 for Go.
@@ -51,7 +51,7 @@ same package. See `examples/time.go` for an example of such an implementation.
 For many use-cases, it may be more convenient to write your types manually and
 use Marshal and Unmarshal directly. If you choose this approach, you may also
 use `git.sr.ht/~sircmpwn/go-bare/schema.SchemaFor` to generate a BARE schema
-langauge document describing your structs.
+language document describing your structs.
 
 ```go
 package main

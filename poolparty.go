@@ -24,11 +24,13 @@ var (
 )
 
 type PoolConfig struct {
-	OnChildOutput        func(ln []byte)
 	Logfn                func(keyvals ...interface{})
 	NumWorkers           int
+	OnWorkerOutput       func(ln []byte)
 	WorkerProc           []string
 	WorkerRequestTimeout time.Duration
+	WorkerRestartDelay   time.Duration
+	OnWorkerRestart      func()
 }
 
 type HTTPRequest struct {
@@ -78,8 +80,11 @@ func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 	if cfg.Logfn == nil {
 		cfg.Logfn = func(v ...interface{}) {}
 	}
-	if cfg.OnChildOutput == nil {
-		cfg.OnChildOutput = func(ln []byte) {}
+	if cfg.OnWorkerOutput == nil {
+		cfg.OnWorkerOutput = func(ln []byte) {}
+	}
+	if cfg.OnWorkerRestart == nil {
+		cfg.OnWorkerRestart = func() {}
 	}
 
 	if len(cfg.WorkerProc) <= 0 {
@@ -289,7 +294,7 @@ func (p *WorkerPool) SpawnWorker() {
 					for {
 						ln, err := brdr.ReadBytes('\n')
 						if len(ln) != 0 {
-							p.cfg.OnChildOutput(ln)
+							p.cfg.OnWorkerOutput(ln)
 						}
 						if err != nil {
 							return
@@ -379,7 +384,8 @@ func (p *WorkerPool) SpawnWorker() {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(200 * time.Millisecond):
+			case <-time.After(p.cfg.WorkerRestartDelay):
+				p.cfg.OnWorkerRestart()
 			}
 		}
 

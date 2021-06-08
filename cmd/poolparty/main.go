@@ -12,8 +12,19 @@ import (
 	"github.com/andrewchambers/poolparty"
 	"github.com/andrewchambers/srop"
 	"github.com/go-logfmt/logfmt"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	flag "github.com/spf13/pflag"
 	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttpadaptor"
+)
+
+var (
+	workerRestartCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "poolparty_worker_restarts",
+		Help: "Number of worker restarts.",
+	})
 )
 
 var logenc *logfmt.Encoder = logfmt.NewEncoder(os.Stderr)
@@ -40,20 +51,24 @@ func (l *fasthttpLogAdaptor) Printf(format string, args ...interface{}) {
 }
 
 func main() {
-	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "time to wait for a janet worker to accept a request")
-	workerRequestTimeout := flag.Duration("worker-request-timeout", 15*time.Second, "timeout before a worker is considered crashed")
-	readTimeout := flag.Duration("request-read-timeout", 60*time.Second, "read timeout before an http request is aborted")
-	writeTimeout := flag.Duration("request-write-timeout", 60*time.Second, "write timeout before an http request is aborted")
-	poolSize := flag.Int("pool-size", 1, "number of worker janet processes")
-	requestBacklog := flag.Int("request-backlog", 1024, "number of requests to accept in the backlog ")
-	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "Maximum request size in bytes")
-	listenOn := flag.String("listen-addr", "127.0.0.1:8080", "address to listen on.")
-	ctlSocket := flag.String("ctl-socket", "./poolparty.sock", "control socket you can interact with using poolparty-ctl.")
+	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "Time to wait for a janet worker to accept a request.")
+	workerRequestTimeout := flag.Duration("worker-request-timeout", 15*time.Second, "Timeout before a worker is considered crashed.")
+	workerRestartDelay := flag.Duration("worker-restart-delay", 1*time.Second, "Delay between worker restarts.")
+	readTimeout := flag.Duration("request-read-timeout", 60*time.Second, "Read timeout before an http request is aborted.")
+	writeTimeout := flag.Duration("request-write-timeout", 60*time.Second, "Write timeout before an http request is aborted.")
+	poolSize := flag.Int("pool-size", 1, "Number of worker janet processes.")
+	requestBacklog := flag.Int("request-backlog", 1024, "Number of requests to accept in the backlog.")
+	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "Maximum request size in bytes.")
+	listenOn := flag.String("listen-address", "127.0.0.1:8080", "Address to listen on.")
+	metricsAddress := flag.String("metrics-address", "", "Address to export metrics on.")
+	ctlSocket := flag.String("ctl-socket", "./poolparty.sock", "Control socket you can interact with using poolparty-ctl.")
 
 	flag.Parse()
 
 	cfg := poolparty.PoolConfig{
-		OnChildOutput:        rawlog,
+		OnWorkerOutput:       rawlog,
+		OnWorkerRestart:      func() { workerRestartCounter.Inc() },
+		WorkerRestartDelay:   *workerRestartDelay,
 		Logfn:                log,
 		NumWorkers:           *poolSize,
 		WorkerProc:           flag.Args(),
@@ -112,6 +127,21 @@ func main() {
 		server.Shutdown()
 		close(gracefulShutdown)
 	}()
+
+	if *metricsAddress != "" {
+		go func() {
+			metricsServer := &fasthttp.Server{
+				Name:              "metrics",
+				Handler:           fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()),
+				ReduceMemoryUsage: true,
+			}
+			log("msg", "starting metrics server", "address", *metricsAddress)
+			err := metricsServer.ListenAndServe(*metricsAddress)
+			if err != nil {
+				log("msg", "metrics server stopped", "err", err)
+			}
+		}()
+	}
 
 	err = server.ListenAndServe(*listenOn)
 	if err != nil {

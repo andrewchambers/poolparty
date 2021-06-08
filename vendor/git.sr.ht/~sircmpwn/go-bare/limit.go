@@ -5,12 +5,26 @@ import (
 	"io"
 )
 
-var maxUnmarshalBytes uint64 = 33554432 /* 32 MiB */
+var (
+	maxUnmarshalBytes uint64 = 1024 * 1024 * 32 /* 32 MiB */
+	maxArrayLength    uint64 = 1024 * 4         /* 4096 elements */
+	maxMapSize        uint64 = 1024
+)
 
-// Sets the maximum size of a message decoded by unmarshal. By default, this is
-// set to 32 MiB.
+// MaxUnmarshalBytes sets the maximum size of a message decoded by unmarshal.
+// By default, this is set to 32 MiB.
 func MaxUnmarshalBytes(bytes uint64) {
 	maxUnmarshalBytes = bytes
+}
+
+// MaxArrayLength sets maximum number of elements in array. Defaults to 4096 elements
+func MaxArrayLength(length uint64) {
+	maxArrayLength = length
+}
+
+// MaxMapSize sets maximum size of map. Defaults to 1024 key/value pairs
+func MaxMapSize(size uint64) {
+	maxMapSize = size
 }
 
 // Use MaxUnmarshalBytes to prevent this error from occuring on messages which

@@ -114,7 +114,4 @@ func (r *RootCtlObject) UnknownMessage(ctx context.Context, cs *srop.ConnServer,
 	respond(&srop.UnexpectedMessage{})
 }
 
-// Clunk is the cleanup method of an object, the name Clunk comes from the 9p protocol.
-// An object is clunked when a server is done with it.
-func (r *RootCtlObject) Clunk(cs *srop.ConnServer) {
-}
+func (r *RootCtlObject) Clunk(cs *srop.ConnServer) {}

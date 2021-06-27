@@ -52,11 +52,15 @@ func (l *fasthttpLogAdaptor) Printf(format string, args ...interface{}) {
 
 func main() {
 	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "Time to wait for a janet worker to accept a request.")
-	workerRequestTimeout := flag.Duration("worker-request-timeout", 15*time.Second, "Timeout before a worker is considered crashed.")
+	workerSpawnTimeout := flag.Duration("worker-spawn-timeout", 50*time.Millisecond, "Time to wait for a janet worker before spawning a new one to meet demand.")
+	workerRequestTimeout := flag.Duration("worker-request-timeout", 60*time.Second, "Time before a worker is considered crashed.")
 	workerRestartDelay := flag.Duration("worker-restart-delay", 1*time.Second, "Delay between worker restarts.")
+	workerHealthCheckInterval := flag.Duration("worker-health-check-interval", 120*time.Second, "Delay between worker health checks.")
 	readTimeout := flag.Duration("request-read-timeout", 60*time.Second, "Read timeout before an http request is aborted.")
 	writeTimeout := flag.Duration("request-write-timeout", 60*time.Second, "Write timeout before an http request is aborted.")
-	poolSize := flag.Int("pool-size", 1, "Number of worker janet processes.")
+	workerAttritionDelay := flag.Duration("worker-attrition-delay", 120*time.Second, "If no requests arrive in this period, a worker will be culled (down to the minimum pool size).")
+	minPoolSize := flag.Int("min-pool-size", 1, "Minimum number of worker processes.")
+	maxPoolSize := flag.Int("max-pool-size", 1, "Maximum number of worker processes.")
 	requestBacklog := flag.Int("request-backlog", 1024, "Number of requests to accept in the backlog.")
 	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "Maximum request size in bytes.")
 	listenOn := flag.String("listen-address", "127.0.0.1:8080", "Address to listen on.")
@@ -66,13 +70,18 @@ func main() {
 	flag.Parse()
 
 	cfg := poolparty.PoolConfig{
-		OnWorkerOutput:       rawlog,
-		OnWorkerRestart:      func() { workerRestartCounter.Inc() },
-		WorkerRestartDelay:   *workerRestartDelay,
-		Logfn:                log,
-		NumWorkers:           *poolSize,
-		WorkerProc:           flag.Args(),
-		WorkerRequestTimeout: *workerRequestTimeout,
+		OnWorkerOutput:            rawlog,
+		OnWorkerRestart:           func() { workerRestartCounter.Inc() },
+		WorkerSpawnTimeout:        *workerSpawnTimeout,
+		WorkerRendezvousTimeout:   *workerRendezvousTimeout,
+		WorkerRestartDelay:        *workerRestartDelay,
+		WorkerAttritionDelay:      *workerAttritionDelay,
+		WorkerRequestTimeout:      *workerRequestTimeout,
+		WorkerHealthCheckInterval: *workerHealthCheckInterval,
+		Logfn:                     log,
+		MinWorkers:                *minPoolSize,
+		MaxWorkers:                *maxPoolSize,
+		WorkerProc:                flag.Args(),
 	}
 
 	pool, err := poolparty.NewWorkerPool(cfg)
@@ -100,8 +109,7 @@ func main() {
 	}()
 
 	handler := poolparty.MakeHTTPHandler(pool, poolparty.HandlerConfig{
-		WorkerRendezvousTimeout: *workerRendezvousTimeout,
-		Logfn:                   log,
+		Logfn: log,
 	})
 
 	server := &fasthttp.Server{

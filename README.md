@@ -1,6 +1,7 @@
 # poolparty
 
-An http server for janet that creates a pool of janet instances and dispatches requests to them.
+An http server for that creates a dynamic pool of workers and dispatches requests to them.
+Currently poolparty is primarily used for janet, but this may change in the future.
 
 
 # Quick example
@@ -20,10 +21,14 @@ webapp.janet
 Then launch pool party from the command line:
 
 ```
-$ poolparty --pool-size 6 -- janet ./example/app.janet
+$ poolparty -- janet ./example/app.janet
+```
+or
+```
+$ poolparty --max-pool-size 8 -- janet ./example/app.janet
 ```
 
-To restart the janet workers:
+To restart the worker pool:
 
 ```
 $ poolparty-ctl restart-workers
@@ -61,7 +66,9 @@ type HTTPRequest {
   body: data
 }
 
-type Request = HTTPRequest | ... Reserved
+type HealthCheckRequest {}
+
+type Request = HTTPRequest | HealthCheckRequest | ... Reserved
 
 type HTTPResponse {
   status: uint

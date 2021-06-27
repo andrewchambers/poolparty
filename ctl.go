@@ -2,7 +2,6 @@ package poolparty
 
 import (
 	"context"
-	"sync"
 
 	"git.sr.ht/~sircmpwn/go-bare"
 	"github.com/andrewchambers/srop"
@@ -80,13 +79,10 @@ func init() {
 }
 
 type RootCtlObject struct {
-	m    sync.Mutex
 	Pool *WorkerPool
 }
 
 func (r *RootCtlObject) Message(ctx context.Context, cs *srop.ConnServer, m srop.Message, respond srop.RespondFunc) {
-	r.m.Lock() // Super coarse locking, we don't need more for now.
-	defer r.m.Unlock()
 
 	switch m.(type) {
 	case *RestartWorkersMsg:

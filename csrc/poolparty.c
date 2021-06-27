@@ -62,9 +62,8 @@ static Janet decode_buffer(uint8_t *buf, size_t sz, size_t *offset) {
 
 static Janet read_request(int32_t argc, Janet *argv) {
     janet_fixarity(argc, 1);
-    FILE *f = janet_getfile(argv, 0, NULL);
 
-    JanetTable *req = janet_table(8);
+    FILE *f = janet_getfile(argv, 0, NULL);
 
     uint8_t szbuf[4];
     if (fread(szbuf, 1, sizeof(szbuf), f) != sizeof(szbuf))
@@ -82,12 +81,15 @@ static Janet read_request(int32_t argc, Janet *argv) {
 
     size_t offset = 0;
 
+    Janet req;
+
     uint64_t variant = decode_varuint(buf, sz, &offset);
     switch (variant) {
       case 0: {
-        janet_table_put(req, janet_ckeywordv("remote-address"), decode_string(buf, sz, &offset));
-        janet_table_put(req, janet_ckeywordv("uri"), decode_string(buf, sz, &offset));
-        janet_table_put(req, janet_ckeywordv("method"), decode_string(buf, sz, &offset));
+        JanetTable *reqt = janet_table(8);
+        janet_table_put(reqt, janet_ckeywordv("remote-address"), decode_string(buf, sz, &offset));
+        janet_table_put(reqt, janet_ckeywordv("uri"), decode_string(buf, sz, &offset));
+        janet_table_put(reqt, janet_ckeywordv("method"), decode_string(buf, sz, &offset));
         uint64_t nheaders = decode_varuint(buf, sz, &offset);
         JanetTable *headers = janet_table(nheaders);
         for (uint64_t i = 0; i < nheaders; i++) {
@@ -95,16 +97,20 @@ static Janet read_request(int32_t argc, Janet *argv) {
           Janet v = decode_string(buf, sz, &offset);
           janet_table_put(headers, k, v);
         }
-        janet_table_put(req, janet_ckeywordv("headers"), janet_wrap_table(headers));
-        janet_table_put(req, janet_ckeywordv("body"), decode_buffer(buf, sz, &offset));
+        janet_table_put(reqt, janet_ckeywordv("headers"), janet_wrap_table(headers));
+        janet_table_put(reqt, janet_ckeywordv("body"), decode_buffer(buf, sz, &offset));
+        req = janet_wrap_table(reqt);
         break;
       }
+      case 1:
+        req = janet_ckeywordv("health-check");
+        break;
       default:
         janet_panicf("unknown or unsupported request variant - %d", variant);
     }
 
     janet_sfree(buf);
-    return janet_wrap_table(req);
+    return req;
 }
 
 static Janet format_response(int32_t argc, Janet *argv) {
@@ -112,14 +118,12 @@ static Janet format_response(int32_t argc, Janet *argv) {
     Janet req = argv[0];
     JanetBuffer *buf = janet_getbuffer(argv, 1);
 
-
     Janet status = janet_get(req, janet_ckeywordv("status"));
     Janet headers = janet_get(req, janet_ckeywordv("headers"));
     Janet body = janet_get(req, janet_ckeywordv("body"));
 
     // Reserve enough for the size.
     janet_buffer_setcount(buf, 4);
-
 
     put_varuint(buf, 0);
     if janet_checktype(status, JANET_NUMBER) {

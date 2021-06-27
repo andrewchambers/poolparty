@@ -22,8 +22,10 @@ func mustConnect(ctlSocket string) *srop.Client {
 
 func main() {
 
+	usage := "Expected a command, one of [restart-workers, spawn-worker, remove-worker, worker-count]"
+
 	if len(os.Args) == 1 {
-		fmt.Fprintf(os.Stderr, "Expected a subcommand.")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(1)
 	}
 
@@ -100,7 +102,7 @@ func main() {
 			}
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "Expected a command, one of [restart-workers, spawn-worker, remove-worker, worker-count]")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(1)
 	}
 }

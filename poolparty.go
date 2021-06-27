@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -24,13 +25,18 @@ var (
 )
 
 type PoolConfig struct {
-	Logfn                func(keyvals ...interface{})
-	NumWorkers           int
-	OnWorkerOutput       func(ln []byte)
-	WorkerProc           []string
-	WorkerRequestTimeout time.Duration
-	WorkerRestartDelay   time.Duration
-	OnWorkerRestart      func()
+	Logfn                     func(keyvals ...interface{})
+	MinWorkers                int
+	MaxWorkers                int
+	OnWorkerOutput            func(ln []byte)
+	WorkerProc                []string
+	WorkerSpawnTimeout        time.Duration
+	WorkerRendezvousTimeout   time.Duration
+	WorkerRequestTimeout      time.Duration
+	WorkerRestartDelay        time.Duration
+	WorkerAttritionDelay      time.Duration
+	WorkerHealthCheckInterval time.Duration
+	OnWorkerRestart           func()
 }
 
 type HTTPRequest struct {
@@ -68,12 +74,15 @@ type removeWorkerProcRequest struct{}
 
 type WorkerPool struct {
 	cfg              PoolConfig
+	mu               sync.Mutex
 	workerCtx        context.Context
 	cancelAllWorkers func()
 	wg               sync.WaitGroup
 	dispatch         chan workRequest
 	ctl              []chan ctlRequest
 	cancelWorker     []func()
+	attritionTicker  *time.Ticker
+	attritionMarker  int32
 }
 
 func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
@@ -86,10 +95,20 @@ func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 	if cfg.OnWorkerRestart == nil {
 		cfg.OnWorkerRestart = func() {}
 	}
-
+	if cfg.MinWorkers < 0 {
+		return nil, errors.New("pool minimum worker count must be greater than or equal to zero")
+	}
+	if cfg.MaxWorkers == 0 {
+		return nil, errors.New("pool maximum worker count must not be zero")
+	}
+	if cfg.MaxWorkers < cfg.MinWorkers {
+		return nil, errors.New("pool maximum worker count must be greater than or equal to the minimum")
+	}
 	if len(cfg.WorkerProc) <= 0 {
 		return nil, errors.New("pool worker proc must not be empty")
 	}
+
+	attritionTicker := time.NewTicker(cfg.WorkerAttritionDelay)
 
 	workerCtx, cancelAllWorkers := context.WithCancel(context.Background())
 	p := &WorkerPool{
@@ -100,11 +119,30 @@ func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 		dispatch:         make(chan workRequest),
 		ctl:              []chan ctlRequest{},
 		cancelWorker:     []func(){},
+		attritionTicker:  attritionTicker,
 	}
 
-	for i := 0; i < cfg.NumWorkers; i++ {
+	for i := 0; i < cfg.MinWorkers; i++ {
 		p.SpawnWorker()
 	}
+
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		defer attritionTicker.Stop()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-attritionTicker.C:
+				shouldRemove := atomic.LoadInt32(&p.attritionMarker) == 1
+				atomic.StoreInt32(&p.attritionMarker, 1)
+				if shouldRemove {
+					p.RemoveWorker()
+				}
+			}
+		}
+	}()
 
 	return p, nil
 }
@@ -206,7 +244,7 @@ func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest
 			Body:    body,
 		}}
 	default:
-		workReq.RespChan <- workResponse{Err: fmt.Errorf("client send unknown response variant")}
+		workReq.RespChan <- workResponse{Err: fmt.Errorf("worker sent unknown response variant")}
 		return
 	}
 
@@ -215,18 +253,32 @@ func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest
 }
 
 func (p *WorkerPool) WorkerCount() uint {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return uint(len(p.ctl))
 }
 
 func (p *WorkerPool) RemoveWorker() {
-	if len(p.ctl) > 0 {
-		p.cancelWorker[len(p.cancelWorker)-1]()
-		p.ctl = p.ctl[:len(p.ctl)-1]
-		p.cancelWorker = p.cancelWorker[:len(p.cancelWorker)-1]
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.ctl) <= p.cfg.MinWorkers {
+		return
 	}
+
+	p.cancelWorker[len(p.cancelWorker)-1]()
+	p.ctl = p.ctl[:len(p.ctl)-1]
+	p.cancelWorker = p.cancelWorker[:len(p.cancelWorker)-1]
 }
 
 func (p *WorkerPool) SpawnWorker() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.ctl) >= p.cfg.MaxWorkers {
+		return
+	}
+
 	ctx, cancelWorker := context.WithCancel(p.workerCtx)
 	// These are deliberately not buffered.
 	ctl := make(chan ctlRequest)
@@ -340,6 +392,9 @@ func (p *WorkerPool) SpawnWorker() {
 				_ = p4.Close()
 				_ = p6.Close()
 
+				workerHealthCheckTicker := time.NewTicker(p.cfg.WorkerHealthCheckInterval)
+				defer workerHealthCheckTicker.Stop()
+
 				for {
 					select {
 					case <-ctx.Done():
@@ -369,6 +424,14 @@ func (p *WorkerPool) SpawnWorker() {
 							logfn("msg", "worker restarting due to error")
 							return
 						}
+					case <-workerHealthCheckTicker.C:
+						// size=1 ++ variant=1.
+						healthCheckRequest := []byte{1, 0, 0, 0, 1}
+						_, err = p2.Write(healthCheckRequest)
+						if err != nil {
+							logfn("msg", "worker restarting, error requesting health check")
+							return
+						}
 					}
 				}
 
@@ -392,7 +455,9 @@ func (p *WorkerPool) SpawnWorker() {
 	}()
 }
 
-func (p *WorkerPool) Dispatch(req HTTPRequest, timeout time.Duration) (HTTPResponse, error) {
+func (p *WorkerPool) Dispatch(req HTTPRequest) (HTTPResponse, error) {
+
+	atomic.StoreInt32(&p.attritionMarker, 0)
 
 	respChan := make(chan workResponse, 1)
 
@@ -401,10 +466,20 @@ func (p *WorkerPool) Dispatch(req HTTPRequest, timeout time.Duration) (HTTPRespo
 		RespChan: respChan,
 	}
 
-	t := time.NewTimer(timeout)
+	t := time.NewTimer(p.cfg.WorkerSpawnTimeout)
 	select {
 	case <-t.C:
-		return HTTPResponse{}, ErrWorkerPoolBusy
+		p.SpawnWorker()
+		t.Reset(p.cfg.WorkerRendezvousTimeout)
+		select {
+		case <-t.C:
+			return HTTPResponse{}, ErrWorkerPoolBusy
+		case <-p.workerCtx.Done():
+			t.Stop()
+			return HTTPResponse{}, ErrWorkerPoolClosed
+		case p.dispatch <- workReq:
+			t.Stop()
+		}
 	case <-p.workerCtx.Done():
 		t.Stop()
 		return HTTPResponse{}, ErrWorkerPoolClosed
@@ -424,6 +499,9 @@ func (p *WorkerPool) Dispatch(req HTTPRequest, timeout time.Duration) (HTTPRespo
 }
 
 func (p *WorkerPool) RestartWorkers(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	for i := 0; i < len(p.ctl); i++ {
 		respChan := make(chan interface{}, 1)
 		select {
@@ -451,8 +529,7 @@ func (p *WorkerPool) Close() {
 }
 
 type HandlerConfig struct {
-	Logfn                   func(keyvals ...interface{})
-	WorkerRendezvousTimeout time.Duration
+	Logfn func(keyvals ...interface{})
 }
 
 func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandler {
@@ -474,11 +551,16 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 			Headers:       reqHeaders,
 			Method:        string(ctx.Request.Header.Method()),
 			Body:          ctx.Request.Body(),
-		}, cfg.WorkerRendezvousTimeout)
+		})
 		if err != nil {
 			logfn("msg", "error while dispatching to worker", "err", err)
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBody([]byte("internal server error\n"))
+			if err == ErrWorkerPoolBusy {
+				ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
+				ctx.SetBody([]byte("server overloaded\n"))
+			} else {
+				ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+				ctx.SetBody([]byte("internal server error\n"))
+			}
 			return
 		}
 

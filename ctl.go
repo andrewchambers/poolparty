@@ -99,7 +99,7 @@ func (r *RootCtlObject) Message(ctx context.Context, cs *srop.ConnServer, m srop
 		r.Pool.RemoveWorker()
 		respond(&srop.Ok{})
 	case *WorkerCountMsg:
-		count := r.Pool.WorkerCount()
+		count := uint(r.Pool.WorkerCount())
 		respond(&WorkerCountMsg{Count: &count})
 	default:
 		respond(&srop.UnexpectedMessage{})

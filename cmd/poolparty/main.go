@@ -59,8 +59,8 @@ func main() {
 	readTimeout := flag.Duration("request-read-timeout", 60*time.Second, "Read timeout before an http request is aborted.")
 	writeTimeout := flag.Duration("request-write-timeout", 60*time.Second, "Write timeout before an http request is aborted.")
 	workerAttritionDelay := flag.Duration("worker-attrition-delay", 120*time.Second, "If no requests arrive in this period, a worker will be culled (down to the minimum pool size).")
-	minPoolSize := flag.Int("min-pool-size", 1, "Minimum number of worker processes.")
-	maxPoolSize := flag.Int("max-pool-size", 1, "Maximum number of worker processes.")
+	minPoolSize := flag.Uint("min-pool-size", 1, "Minimum number of worker processes.")
+	maxPoolSize := flag.Uint("max-pool-size", 1, "Maximum number of worker processes.")
 	requestBacklog := flag.Int("request-backlog", 1024, "Number of requests to accept in the backlog.")
 	maxRequestBodySize := flag.Int("max-request-body-size", 4*1024*1024, "Maximum request size in bytes.")
 	listenOn := flag.String("listen-address", "127.0.0.1:8080", "Address to listen on.")
@@ -79,8 +79,8 @@ func main() {
 		WorkerRequestTimeout:      *workerRequestTimeout,
 		WorkerHealthCheckInterval: *workerHealthCheckInterval,
 		Logfn:                     log,
-		MinWorkers:                *minPoolSize,
-		MaxWorkers:                *maxPoolSize,
+		MinWorkers:                uint32(*minPoolSize),
+		MaxWorkers:                uint32(*maxPoolSize),
 		WorkerProc:                flag.Args(),
 	}
 

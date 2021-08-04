@@ -14,13 +14,14 @@
   (def buf @"")
   (while true
     (def req (_poolparty/read-request inf))
-    (when (= req :health-check)
-      (health-check))
-    (def resp (handler req))
-    (_poolparty/format-response resp buf)
-    (file/write outf buf)
-    (file/flush outf)
-    # Clear buffer if its a large response
-    (when (> (length buf) 1000000)
-      (buffer/clear buf)
-      (buffer/trim buf))))
+    (cond
+      (= req :health-check)
+      (health-check)
+      (let [resp (handler req)]
+        (_poolparty/format-response resp buf)
+        (file/write outf buf)
+        (file/flush outf)
+        # Clear buffer if its a large response
+        (when (> (length buf) 1000000)
+          (buffer/clear buf)
+          (buffer/trim buf))))))

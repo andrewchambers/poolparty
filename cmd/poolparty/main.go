@@ -51,6 +51,8 @@ func (l *fasthttpLogAdaptor) Printf(format string, args ...interface{}) {
 }
 
 func main() {
+	staticRoot := flag.String("static-root", "", "Path to serve static files from.")
+	staticUrlPrefix := flag.String("static-url-prefix", "/static/", "Serve static files below this prefix.")
 	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "Time to wait for a janet worker to accept a request.")
 	workerSpawnTimeout := flag.Duration("worker-spawn-timeout", 50*time.Millisecond, "Time to wait for a janet worker before spawning a new one to meet demand.")
 	workerRequestTimeout := flag.Duration("worker-request-timeout", 60*time.Second, "Time before a worker is considered crashed.")
@@ -109,7 +111,9 @@ func main() {
 	}()
 
 	handler := poolparty.MakeHTTPHandler(pool, poolparty.HandlerConfig{
-		Logfn: log,
+		Logfn:           log,
+		StaticRoot:      *staticRoot,
+		StaticUrlPrefix: *staticUrlPrefix,
 	})
 
 	server := &fasthttp.Server{

@@ -2,6 +2,7 @@ package poolparty
 
 import (
 	"bufio"
+	"strings"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -538,16 +539,42 @@ func (p *WorkerPool) Close() {
 }
 
 type HandlerConfig struct {
-	Logfn func(keyvals ...interface{})
+	Logfn               func(keyvals ...interface{})
+	StaticRoot      string
+	StaticUrlPrefix string
 }
 
 func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandler {
 	if cfg.Logfn == nil {
 		cfg.Logfn = func(v ...interface{}) {}
 	}
+
+	if !strings.HasSuffix(cfg.StaticUrlPrefix, "/") {
+		cfg.StaticUrlPrefix += "/"
+	}
+
+	var staticFileRequestHandler fasthttp.RequestHandler
+	staticUrlPrefixBytes := []byte(cfg.StaticUrlPrefix)
+
+	if cfg.StaticRoot != "" {
+		fs := &fasthttp.FS{
+			Root:        cfg.StaticRoot,
+			PathRewrite: fasthttp.NewPathPrefixStripper(len(staticUrlPrefixBytes)-1),
+		}
+		staticFileRequestHandler = fs.NewRequestHandler()
+	}
+
 	logfn := cfg.Logfn
+
 	return func(ctx *fasthttp.RequestCtx) {
 		uri := ctx.Request.URI()
+
+		if staticFileRequestHandler != nil {
+			if bytes.HasPrefix(uri.Path(), staticUrlPrefixBytes) {
+				staticFileRequestHandler(ctx)
+				return
+			}
+		}
 
 		reqHeaders := make(map[string]string)
 		ctx.Request.Header.VisitAll(func(key, value []byte) {

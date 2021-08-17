@@ -52,6 +52,8 @@ func (l *fasthttpLogAdaptor) Printf(format string, args ...interface{}) {
 
 func main() {
 	staticRoot := flag.String("static-root", "", "Path to serve static files from.")
+	staticNoBrotli := flag.Bool("static-no-brotli", false, "Don't use brotli compression.")
+	staticCompress := flag.Bool("static-compress", false, "Try to use compressed files or compress them if not already compressed.")
 	staticUrlPrefix := flag.String("static-url-prefix", "/static/", "Serve static files below this prefix.")
 	workerRendezvousTimeout := flag.Duration("worker-rendezvous-timeout", 60*time.Second, "Time to wait for a janet worker to accept a request.")
 	workerSpawnTimeout := flag.Duration("worker-spawn-timeout", 50*time.Millisecond, "Time to wait for a janet worker before spawning a new one to meet demand.")
@@ -112,6 +114,8 @@ func main() {
 
 	handler := poolparty.MakeHTTPHandler(pool, poolparty.HandlerConfig{
 		Logfn:           log,
+		StaticCompress:  *staticCompress,
+		StaticNoBrotli:  *staticNoBrotli,
 		StaticRoot:      *staticRoot,
 		StaticUrlPrefix: *staticUrlPrefix,
 	})

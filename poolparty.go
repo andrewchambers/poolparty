@@ -2,7 +2,6 @@ package poolparty
 
 import (
 	"bufio"
-	"strings"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -11,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -539,7 +539,9 @@ func (p *WorkerPool) Close() {
 }
 
 type HandlerConfig struct {
-	Logfn               func(keyvals ...interface{})
+	Logfn           func(keyvals ...interface{})
+	StaticCompress  bool
+	StaticNoBrotli  bool
 	StaticRoot      string
 	StaticUrlPrefix string
 }
@@ -558,8 +560,10 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 
 	if cfg.StaticRoot != "" {
 		fs := &fasthttp.FS{
-			Root:        cfg.StaticRoot,
-			PathRewrite: fasthttp.NewPathPrefixStripper(len(staticUrlPrefixBytes)-1),
+			Root:           cfg.StaticRoot,
+			Compress:       cfg.StaticCompress,
+			CompressBrotli: !cfg.StaticNoBrotli,
+			PathRewrite:    fasthttp.NewPathPrefixStripper(len(staticUrlPrefixBytes) - 1),
 		}
 		staticFileRequestHandler = fs.NewRequestHandler()
 	}

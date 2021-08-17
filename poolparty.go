@@ -563,7 +563,11 @@ func MakeHTTPHandler(pool *WorkerPool, cfg HandlerConfig) fasthttp.RequestHandle
 			Root:           cfg.StaticRoot,
 			Compress:       cfg.StaticCompress,
 			CompressBrotli: !cfg.StaticNoBrotli,
-			PathRewrite:    fasthttp.NewPathPrefixStripper(len(staticUrlPrefixBytes) - 1),
+			CompressedFileSuffixes: map[string]string{
+				"gzip": ".gz",
+				"br":   ".br",
+			},
+			PathRewrite: fasthttp.NewPathPrefixStripper(len(staticUrlPrefixBytes) - 1),
 		}
 		staticFileRequestHandler = fs.NewRequestHandler()
 	}

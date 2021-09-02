@@ -1,8 +1,7 @@
 # poolparty
 
-An http server for that creates a dynamic pool of workers and dispatches requests to them.
+An http server that creates a dynamic pool of workers and dispatches requests to them.
 Currently poolparty is primarily used for janet, but this may change in the future.
-
 
 # Quick example
 
@@ -31,7 +30,7 @@ $ poolparty --max-pool-size 8 -- janet ./example/app.janet
 To restart the worker pool:
 
 ```
-$ poolparty-ctl restart-workers
+$ echo -e "restart-workers\nexit" | nc -U ./poolparty.sock
 ```
 
 # Building
@@ -42,6 +41,25 @@ $ cd poolparty
 $ jpm --verbose install
 ...
 ```
+
+# Ctl socket
+
+Poolparty is controlled by a simple unix socket protocol:
+
+To connect:
+
+```
+$ nc -U poolparty.sock
+```
+
+Then try typing any of the following commands:
+
+- restart-workers : Restart all workers with zero downtime.
+- spawn-workers N : N workers.
+- remove-workers N : Kill up to N workers, down to the pool minimum.
+- stats : Print human readable stats.
+- collectd-metrics INTERVAL : Print collectd exec format metrics forever.
+- exit : Disconnect.
 
 # Poolparty <-> Worker protocol
 

@@ -1185,7 +1185,7 @@ func (req *Request) ContinueReadBodyStream(r *bufio.Reader, maxBodySize int, pre
 
 	req.body = bodyBuf
 	req.bodyStream = acquireRequestStream(bodyBuf, r, contentLength)
-	req.Header.SetContentLength(len(bodyBuf.B))
+	req.Header.SetContentLength(contentLength)
 	return nil
 }
 
@@ -1856,18 +1856,7 @@ func writeBodyFixedSize(w *bufio.Writer, r io.Reader, size int64) error {
 		}
 	}
 
-	// Unwrap a single limited reader for triggering sendfile path
-	// in net.TCPConn.ReadFrom.
-	lr, ok := r.(*io.LimitedReader)
-	if ok {
-		r = lr.R
-	}
-
 	n, err := copyZeroAlloc(w, r)
-
-	if ok {
-		lr.N -= n
-	}
 
 	if n != size && err == nil {
 		err = fmt.Errorf("copied %d bytes from body stream instead of %d bytes", n, size)

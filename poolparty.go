@@ -37,7 +37,6 @@ type PoolConfig struct {
 	WorkerRestartDelay        time.Duration
 	WorkerAttritionDelay      time.Duration
 	WorkerHealthCheckInterval time.Duration
-	OnWorkerRestart           func()
 }
 
 type HTTPRequest struct {
@@ -81,9 +80,10 @@ type WorkerPool struct {
 	wg               sync.WaitGroup
 	dispatch         chan workRequest
 	ctl              []chan ctlRequest
-	workerCount      uint32
+	numWorkers       uint32
 	cancelWorker     []func()
 	attritionMarker  int32
+	workerRestarts   uint64
 }
 
 func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
@@ -92,9 +92,6 @@ func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 	}
 	if cfg.OnWorkerOutput == nil {
 		cfg.OnWorkerOutput = func(ln []byte) {}
-	}
-	if cfg.OnWorkerRestart == nil {
-		cfg.OnWorkerRestart = func() {}
 	}
 	if cfg.MinWorkers < 0 {
 		return nil, errors.New("pool minimum worker count must be greater than or equal to zero")
@@ -150,6 +147,18 @@ func NewWorkerPool(cfg PoolConfig) (*WorkerPool, error) {
 	}()
 
 	return p, nil
+}
+
+type WorkerPoolStats struct {
+	Workers        uint32
+	WorkerRestarts uint64
+}
+
+func (p *WorkerPool) Stats() WorkerPoolStats {
+	return WorkerPoolStats{
+		Workers:        p.NumWorkers(),
+		WorkerRestarts: atomic.LoadUint64(&p.workerRestarts),
+	}
 }
 
 func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest, out io.Writer, in io.Reader) (ok bool) {
@@ -257,29 +266,29 @@ func workerHandleRequest(ctx context.Context, p *WorkerPool, workReq workRequest
 	return
 }
 
-func (p *WorkerPool) WorkerCount() uint32 {
-	return atomic.LoadUint32(&p.workerCount)
+func (p *WorkerPool) NumWorkers() uint32 {
+	return atomic.LoadUint32(&p.numWorkers)
 }
 
 func (p *WorkerPool) RemoveWorker() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.WorkerCount() <= p.cfg.MinWorkers {
+	if p.NumWorkers() <= p.cfg.MinWorkers {
 		return
 	}
 
 	p.cancelWorker[len(p.cancelWorker)-1]()
 	p.ctl = p.ctl[:len(p.ctl)-1]
 	p.cancelWorker = p.cancelWorker[:len(p.cancelWorker)-1]
-	atomic.AddUint32(&p.workerCount, ^uint32(0)) // Decrement
+	atomic.AddUint32(&p.numWorkers, ^uint32(0)) // Decrement
 }
 
 func (p *WorkerPool) SpawnWorker() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.WorkerCount() >= p.cfg.MaxWorkers {
+	if p.NumWorkers() >= p.cfg.MaxWorkers {
 		return
 	}
 
@@ -289,7 +298,7 @@ func (p *WorkerPool) SpawnWorker() {
 	p.ctl = append(p.ctl, ctl)
 	p.cancelWorker = append(p.cancelWorker, cancelWorker)
 	p.wg.Add(1)
-	atomic.AddUint32(&p.workerCount, 1)
+	atomic.AddUint32(&p.numWorkers, 1)
 
 	go func() {
 		defer p.wg.Done()
@@ -453,7 +462,7 @@ func (p *WorkerPool) SpawnWorker() {
 			case <-ctx.Done():
 				return
 			case <-time.After(p.cfg.WorkerRestartDelay):
-				p.cfg.OnWorkerRestart()
+				atomic.AddUint64(&p.workerRestarts, 1)
 			}
 		}
 
@@ -476,8 +485,8 @@ func (p *WorkerPool) Dispatch(req HTTPRequest) (HTTPResponse, error) {
 	case <-t.C:
 
 		// Only bother grabbing the mutex if we know it has a chance
-		// of spawning a new worker (WorkerCount does not lock).
-		if p.WorkerCount() < p.cfg.MaxWorkers {
+		// of spawning a new worker (NumWorkers does not lock).
+		if p.NumWorkers() < p.cfg.MaxWorkers {
 			p.SpawnWorker()
 		}
 		t.Reset(p.cfg.WorkerRendezvousTimeout)
@@ -512,7 +521,7 @@ func (p *WorkerPool) RestartWorkers(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for i := uint32(0); i < p.WorkerCount(); i++ {
+	for i := uint32(0); i < p.NumWorkers(); i++ {
 		respChan := make(chan interface{}, 1)
 		select {
 		case <-ctx.Done():

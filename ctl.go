@@ -53,27 +53,23 @@ func (h *CtlHandler) Handle(cmd string, args []string, w io.Writer) error {
 		_, err := w.Write(buf.Bytes())
 		return err
 	case "collectd-metrics":
-		if len(args) != 1 {
-			return errors.New("unexpected an interval")
+		if len(args) != 0 {
+			return errors.New("unexpected arguments")
 		}
-		interval, err := strconv.ParseInt(args[0], 10, 64)
-		if err != nil {
-			return err
-		}
-
 		host, _ := os.Hostname()
 		if host == "" {
-			host = "unknown"
+			host = "_unknown_"
 		}
 		buf := bytes.Buffer{}
 		bufw := io.Writer(&buf)
+		interval := 10
 		for {
 			now := time.Now().Unix()
 			stats := h.Pool.Stats()
 			buf.Reset()
 			fmt.Fprintf(bufw, "putval %s/poolparty/gauge-goroutines interval=%d %d:%d\n", host, interval, now, runtime.NumGoroutine())
 			fmt.Fprintf(bufw, "putval %s/poolparty/gauge-workers interval=%d %d:%d\n", host, interval, now, stats.Workers)
-			fmt.Fprintf(bufw, "putval %s/poolparty/counter-worker-restarts interval=%d %d:%d\n", host, interval, now, stats.WorkerRestarts)
+			fmt.Fprintf(bufw, "putval %s/poolparty/derive-worker-restarts interval=%d %d:%d\n", host, interval, now, stats.WorkerRestarts)
 			_, err := w.Write(buf.Bytes())
 			if err != nil {
 				return err

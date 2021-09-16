@@ -24,4 +24,4 @@
   :name "_poolparty"
   :source @["csrc/poolparty.c"])
 
-(install-rule "build/poolparty" (dyn :binpath JANET_BINPATH))
+(install-rule "build/poolparty" (dyn :binpath))

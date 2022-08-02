@@ -84,7 +84,7 @@ func (h *CtlHandler) Handle(cmd string, args []string, w io.Writer) error {
 			buf.Reset()
 			fmt.Fprintf(bufw, "putval %s/poolparty%s/gauge-goroutines interval=%d %d:%d\n", host, metricsLabelSuffix, metricsInterval, now, runtime.NumGoroutine())
 			fmt.Fprintf(bufw, "putval %s/poolparty%s/gauge-workers interval=%d %d:%d\n", host, metricsLabelSuffix, metricsInterval, now, stats.Workers)
-			fmt.Fprintf(bufw, "putval %s/poolparty%s/derive-worker-restarts interval=%d %d:%d\n", host, metricsLabelSuffix, metricsInterval, now, stats.WorkerRestarts)
+			fmt.Fprintf(bufw, "putval %s/poolparty%s/counter-worker-restarts interval=%d %d:%d\n", host, metricsLabelSuffix, metricsInterval, now, stats.WorkerRestarts)
 			_, err := w.Write(buf.Bytes())
 			if err != nil {
 				return err

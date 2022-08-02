@@ -53,28 +53,43 @@ func (h *CtlHandler) Handle(cmd string, args []string, w io.Writer) error {
 		_, err := w.Write(buf.Bytes())
 		return err
 	case "collectd-metrics":
-		if len(args) != 0 {
-			return errors.New("unexpected arguments")
-		}
 		host, _ := os.Hostname()
 		if host == "" {
 			host = "_unknown_"
 		}
+		metricsIntervalStr := "10"
+		metricsLabelSuffix := ""
+		switch len(args) {
+		case 2:
+			metricsLabelSuffix = "-" + args[1]
+			fallthrough
+		case 1:
+			metricsIntervalStr = args[0]
+			fallthrough
+		case 0:
+			/* nothing */
+		default:
+			fmt.Fprintf(w, "usage: collectd-metrics [interval] [label-suffix]")
+			return errors.New("unexpected arguments")
+		}
+		metricsInterval, _ := strconv.Atoi(metricsIntervalStr)
+		if metricsInterval <= 0 {
+			metricsInterval = 10
+		}
 		buf := bytes.Buffer{}
 		bufw := io.Writer(&buf)
-		interval := 10
 		for {
 			now := time.Now().Unix()
 			stats := h.Pool.Stats()
 			buf.Reset()
-			fmt.Fprintf(bufw, "putval %s/poolparty/gauge-goroutines interval=%d %d:%d\n", host, interval, now, runtime.NumGoroutine())
-			fmt.Fprintf(bufw, "putval %s/poolparty/gauge-workers interval=%d %d:%d\n", host, interval, now, stats.Workers)
-			fmt.Fprintf(bufw, "putval %s/poolparty/derive-worker-restarts interval=%d %d:%d\n", host, interval, now, stats.WorkerRestarts)
+			fmt.Fprintf(bufw, "putval %s/poolparty%s/gauge-goroutines interval=%d %d:%d\n", host, metricsLabelSuffix, metricsInterval, now, runtime.NumGoroutine())
+			fmt.Fprintf(bufw, "putval %s/poolparty%s/gauge-workers interval=%d %d:%d\n", host, metricsLabelSuffix, metricsInterval, now, stats.Workers)
+			fmt.Fprintf(bufw, "putval %s/poolparty%s/derive-worker-restarts interval=%d %d:%d\n", metricsLabelSuffix, host, metricsInterval, now, stats.WorkerRestarts)
 			_, err := w.Write(buf.Bytes())
 			if err != nil {
 				return err
 			}
-			time.Sleep(time.Duration(interval) * time.Second)
+			time.Sleep(time.Duration(metricsInterval) * time.Second)
 		}
 	}
 	return errors.New("unknown command, want restart-workers|spawn-workers|remove-workers|stats|collectd-metrics")
